@@ -4,7 +4,8 @@
 /* ---------------- Storage ---------------- */
 var STORE_KEY = "tarad_data_v2";
 var DEFAULT_DATA = {
-  settings: { employeeName: "", stdHours: 8, workDays: [6,0,1,2,3] }, // JS getDay(): 0=Sun..6=Sat ; default Sat..Wed
+  settings: { employeeName: "", stdHours: 8, workDays: [6,0,1,2,3],
+    mizito: { token: "", project: "", board: "", assignee: "" } },
   entries: {}
 };
 function loadData(){
@@ -16,6 +17,7 @@ function loadData(){
     if(!d.entries) d.entries = {};
     if(typeof d.settings.stdHours !== "number") d.settings.stdHours = 8;
     if(!Array.isArray(d.settings.workDays)) d.settings.workDays = [6,0,1,2,3];
+    if(!d.settings.mizito) d.settings.mizito = { token:"", project:"", board:"", assignee:"" };
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULT_DATA)); }
 }
@@ -45,6 +47,10 @@ function jalaliPartsOf(date){
 function jalaliLabel(date){
   var p = jalaliPartsOf(date);
   return p.y+"/"+pad2(p.m)+"/"+pad2(p.d);
+}
+function jalaliCompact(date){
+  var p = jalaliPartsOf(date);
+  return ""+p.y+pad2(p.m)+pad2(p.d);
 }
 
 var JALALI_MONTH_LEN = [31,31,31,31,31,31,30,30,30,30,30,29];
@@ -371,6 +377,100 @@ document.getElementById('calNext').addEventListener('click', function(){
   calView.m++; if(calView.m>12){ calView.m=1; calView.y++; } renderCalendar();
 });
 
+/* ---------------- Mizito sync (phase 7, optional, needs internet only when used) ---------------- */
+function parseMizitoCurl(text){
+  if(!text || !text.trim()) return null;
+  var tokenMatch = text.match(/-H\s+'x-token:\s*([^']+)'/i) || text.match(/-H\s+"x-token:\s*([^"]+)"/i);
+  var dataMatch = text.match(/--data-raw\s+'([\s\S]*)'\s*$/) || text.match(/--data-raw\s+"([\s\S]*)"\s*$/) || text.match(/-d\s+'([\s\S]*)'\s*$/);
+  if(!tokenMatch || !dataMatch) return null;
+  var token = tokenMatch[1].trim();
+  var body;
+  try{ body = JSON.parse(dataMatch[1]); }catch(e){ return null; }
+  if(!body || !body.project || !body.kanban_board || !body.assignee || !body.assignee[0]) return null;
+  return { token: token, project: body.project, board: body.kanban_board, assignee: body.assignee[0] };
+}
+function mizitoConfigured(){
+  var m = DATA.settings.mizito;
+  return !!(m && m.token && m.project && m.board && m.assignee);
+}
+function buildMizitoNotes(entry){
+  if(!entry) return "";
+  var lines = [];
+  if(entry.type==='normal' || entry.type==='remote'){
+    if(entry.type==='remote') lines.push('دورکاری');
+    lines.push('ساعت ورود: '+(entry.checkIn||'—'));
+    lines.push('ساعت خروج: '+(entry.checkOut||'—'));
+  } else if(entry.type==='leave_full'){
+    lines.push('مرخصی روزانه ('+(entry.leaveType||'استحقاقی')+')');
+  } else if(entry.type==='leave_hours'){
+    lines.push('مرخصی ساعتی: '+((entry.leaveMinutes||0)/60)+' ساعت');
+  } else if(entry.type==='holiday'){
+    lines.push('تعطیل رسمی'+(entry.holidayTitle? (': '+entry.holidayTitle):''));
+  }
+  if(entry.note) lines.push(entry.note);
+  return lines.join('\n');
+}
+function sendEntryToMizito(key){
+  var m = DATA.settings.mizito;
+  var entry = getEntry(key);
+  if(!mizitoConfigured() || !entry) return Promise.resolve({ok:false, message:'تنظیمات میزیتو کامل نیست'});
+  var date = keyToDate(key);
+  var payload = {
+    title: jalaliCompact(date),
+    notes: buildMizitoNotes(entry),
+    assignee: [m.assignee],
+    project: m.project,
+    kanban_board: m.board,
+    labels: [], attachments: [], deleted: false, alarm_options: null,
+    progress: 0, weight: 1, comment: "", responsible: null, insert_to_chat_group: true
+  };
+  return fetch('https://app.mizito.ir/api/tasks/add', {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json, text/plain, */*',
+      'content-type': 'application/json;charset=UTF-8',
+      'origin': 'https://office.mizito.ir',
+      'referer': 'https://office.mizito.ir/',
+      'x-token': m.token
+    },
+    body: JSON.stringify(payload)
+  }).then(function(res){
+    if(!res.ok) return { ok:false, message: 'خطای سرور ('+res.status+') — شاید توکن منقضی شده، دوباره cURL را در تنظیمات جای‌گذاری کنید' };
+    return res.json().then(function(j){
+      if(j && j._id){
+        entry.mizitoSentAt = Date.now();
+        setEntry(key, entry);
+        return { ok:true };
+      }
+      return { ok:false, message: (j && j.msg) ? j.msg : 'پاسخ نامعتبر از میزیتو' };
+    });
+  }).catch(function(err){
+    return { ok:false, message: 'اتصال برقرار نشد — اینترنت را چک کنید ('+(err&&err.message?err.message:'')+')' };
+  });
+}
+function sendMonthToMizito(jy, jm, onProgress){
+  var info = jalaliMonthInfo(jy, jm);
+  var keys = [];
+  for(var d=1; d<=info.days; d++){
+    var date = new Date(info.start.getTime());
+    date.setDate(date.getDate()+(d-1));
+    var key = dateKeyOf(date);
+    var entry = getEntry(key);
+    if(entry && !entry.mizitoSentAt) keys.push(key);
+  }
+  var sent = 0, failed = 0, i = 0;
+  function next(){
+    if(i >= keys.length){ return Promise.resolve({sent:sent, failed:failed, total:keys.length}); }
+    var key = keys[i++];
+    return sendEntryToMizito(key).then(function(r){
+      if(r.ok) sent++; else failed++;
+      if(onProgress) onProgress(sent+failed, keys.length);
+      return next();
+    });
+  }
+  return next();
+}
+
 /* ---------------- Entry edit sheet (shared: today + any date) ---------------- */
 var sheetKey = null;
 var sheetType = 'normal';
@@ -388,6 +488,16 @@ function openSheet(key, forceType){
   document.getElementById('fHolidayTitle').value = (entry && entry.holidayTitle) || '';
   document.getElementById('fNote').value = (entry && entry.note) || '';
   document.getElementById('btnDeleteEntry').style.display = entry ? 'block' : 'none';
+  var mzRow = document.getElementById('mzSendRow');
+  var mzNote = document.getElementById('mzSendNote');
+  if(mizitoConfigured() && entry){
+    mzRow.style.display = 'flex';
+    mzNote.className = 'mz-note';
+    mzNote.textContent = entry.mizitoSentAt ? ('قبلاً ارسال شده — '+new Date(entry.mizitoSentAt).toLocaleString('fa-IR')) : '';
+  } else {
+    mzRow.style.display = 'none';
+    mzNote.textContent = '';
+  }
   document.getElementById('sheetBackdrop').classList.add('open');
 }
 function closeSheet(){ document.getElementById('sheetBackdrop').classList.remove('open'); sheetKey = null; }
@@ -406,6 +516,25 @@ Array.prototype.forEach.call(document.querySelectorAll('#segType button'), funct
 });
 document.getElementById('sheetBackdrop').addEventListener('click', function(e){ if(e.target===this) closeSheet(); });
 document.getElementById('btnCancelEntry').addEventListener('click', closeSheet);
+document.getElementById('btnSendMizito').addEventListener('click', function(){
+  if(!sheetKey) return;
+  var btn = document.getElementById('btnSendMizito');
+  var note = document.getElementById('mzSendNote');
+  btn.disabled = true;
+  note.className = 'mz-note';
+  note.textContent = 'در حال ارسال...';
+  sendEntryToMizito(sheetKey).then(function(r){
+    btn.disabled = false;
+    if(r.ok){
+      note.className = 'mz-note ok';
+      note.textContent = 'با موفقیت ارسال شد ✓';
+      showToast('به میزیتو ارسال شد');
+    } else {
+      note.className = 'mz-note err';
+      note.textContent = r.message || 'ارسال ناموفق بود';
+    }
+  });
+});
 document.getElementById('btnDeleteEntry').addEventListener('click', function(){
   if(!sheetKey) return;
   removeEntry(sheetKey);
@@ -455,6 +584,16 @@ function renderSettings(){
   document.getElementById('setName').value = DATA.settings.employeeName || '';
   document.getElementById('setStdHours').value = DATA.settings.stdHours;
   renderWeekdayGrid();
+  var m = DATA.settings.mizito;
+  var box = document.getElementById('mzParsedBox');
+  if(m && (m.project || m.board || m.assignee || m.token)){
+    box.style.display = 'block';
+    document.getElementById('mzProject').value = m.project || '';
+    document.getElementById('mzBoard').value = m.board || '';
+    document.getElementById('mzAssignee').value = m.assignee || '';
+  } else {
+    box.style.display = 'none';
+  }
 }
 document.getElementById('setName').addEventListener('change', function(){
   DATA.settings.employeeName = this.value.trim(); saveData();
@@ -477,12 +616,36 @@ function renderReport(){
     rstat(agg.leaveDays+' روز','مرخصی روزانه') +
     rstat(agg.holidayDays+' روز','تعطیل رسمی') +
     rstat(agg.missingDays+' روز','بدون ثبت');
+  document.getElementById('btnMizitoBulk').style.display = mizitoConfigured() ? 'flex' : 'none';
 }
 document.getElementById('repPrev').addEventListener('click', function(){
   repView.m--; if(repView.m<1){ repView.m=12; repView.y--; } renderReport();
 });
 document.getElementById('repNext').addEventListener('click', function(){
   repView.m++; if(repView.m>12){ repView.m=1; repView.y++; } renderReport();
+});
+document.getElementById('btnMizitoBulk').addEventListener('click', function(){
+  var btn = document.getElementById('btnMizitoBulk');
+  var note = document.getElementById('mzBulkNote');
+  btn.disabled = true;
+  note.className = 'mz-note';
+  note.textContent = 'در حال ارسال...';
+  sendMonthToMizito(repView.y, repView.m, function(done, total){
+    note.textContent = 'در حال ارسال... ('+done+' از '+total+')';
+  }).then(function(r){
+    btn.disabled = false;
+    if(r.total === 0){
+      note.className = 'mz-note';
+      note.textContent = 'همه روزهای این ماه قبلاً ارسال شده‌اند (یا روزی برای ارسال نیست)';
+    } else if(r.failed === 0){
+      note.className = 'mz-note ok';
+      note.textContent = r.sent+' روز با موفقیت ارسال شد ✓';
+    } else {
+      note.className = 'mz-note err';
+      note.textContent = r.sent+' روز ارسال شد، '+r.failed+' روز ناموفق بود (احتمالاً توکن منقضی شده)';
+    }
+    showToast('همگام‌سازی با میزیتو تمام شد');
+  });
 });
 
 /* ---------------- Native save/share helper ----------------
@@ -740,8 +903,33 @@ document.getElementById('btnReset').addEventListener('click', function(){
   }
 });
 
-/* ---------------- Init ---------------- */
-function refreshAll(){
+document.getElementById('btnParseCurl').addEventListener('click', function(){
+  var text = document.getElementById('mzCurlInput').value;
+  var parsed = parseMizitoCurl(text);
+  var note = document.getElementById('mzParseNote');
+  if(!parsed){
+    note.className = 'mz-note err';
+    note.textContent = 'متن cURL شناسایی نشد — مطمئن شوید کل دستور (شامل -H و --data-raw) را کپی کرده‌اید';
+    return;
+  }
+  DATA.settings.mizito = parsed;
+  saveData();
+  note.className = 'mz-note ok';
+  note.textContent = 'با موفقیت استخراج و ذخیره شد ✓';
+  document.getElementById('mzCurlInput').value = '';
+  renderSettings();
+  renderReport();
+});
+['mzProject','mzBoard','mzAssignee'].forEach(function(id){
+  document.getElementById(id).addEventListener('change', function(){
+    var key = id === 'mzProject' ? 'project' : id === 'mzBoard' ? 'board' : 'assignee';
+    DATA.settings.mizito[key] = this.value.trim();
+    saveData();
+    renderReport();
+  });
+});
+
+/* ---------------- Init ---------------- */function refreshAll(){
   renderTopDate();
   renderToday();
   renderCalendar();

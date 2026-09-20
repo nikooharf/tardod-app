@@ -76,6 +76,9 @@
 
       <button class="export-btn" id="btnExport">📊 دریافت فایل اکسل این ماه</button>
       <div class="hint" id="exportHint">فایل اکسل شامل جدول کامل روزهای ماه، ساعت ورود و خروج، مدت کارکرد، مرخصی‌ها، تعطیلات رسمی و جمع‌بندی نهایی است — آماده ارسال برای واحد منابع انسانی از طریق تلگرام، ایمیل یا هر اپ دیگری روی گوشی.</div>
+
+      <button class="export-btn secondary" id="btnMizitoBulk" style="display:none;">📤 ارسال این ماه به میزیتو</button>
+      <div class="mz-note" id="mzBulkNote"></div>
     </section>
 
     <!-- SETTINGS -->
@@ -111,6 +114,43 @@
           تمام اطلاعات فقط داخل همین گوشی ذخیره می‌شود؛ این اپ به هیچ سروری وصل نیست و بدون اینترنت کار می‌کند.
           چون پشتیبان سروری وجود ندارد، هر چند وقت یک‌بار از «خروجی پشتیبان» استفاده کنید تا در صورت حذف اپ یا تعویض گوشی، اطلاعات از بین نرود.
         </div>
+      </div>
+      <div class="section-title">همگام‌سازی با میزیتو (اختیاری)</div>
+      <div class="card">
+        <div class="about-text" style="margin-bottom:14px;">
+          این بخش تنها بخشی از اپ است که به اینترنت نیاز دارد — و فقط وقتی که خودتان دکمهٔ ارسال را بزنید.
+          یک‌بار باید از مرورگر، دستور cURL درخواست «ثبت وظیفهٔ جدید» را از سایت میزیتو کپی کنید (راهنما پایین همین بخش) و اینجا جای‌گذاری کنید.
+        </div>
+        <div class="field">
+          <label>متن cURL</label>
+          <textarea id="mzCurlInput" placeholder="curl 'https://app.mizito.ir/api/tasks/add' ..." style="min-height:90px; font-family:monospace; font-size:11px; direction:ltr; text-align:left;"></textarea>
+        </div>
+        <button class="row-btn" id="btnParseCurl" style="margin-bottom:6px;"><span>استخراج تنظیمات از cURL</span><span>›</span></button>
+        <div class="mz-note" id="mzParseNote"></div>
+
+        <div id="mzParsedBox" style="display:none; margin-top:14px;">
+          <div class="field">
+            <label>شناسه پروژه (project)</label>
+            <input type="text" id="mzProject" style="direction:ltr; text-align:left;">
+          </div>
+          <div class="field">
+            <label>شناسه بورد/ستون خودتان (kanban_board)</label>
+            <input type="text" id="mzBoard" style="direction:ltr; text-align:left;">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>شناسه کاربری خودتان (assignee)</label>
+            <input type="text" id="mzAssignee" style="direction:ltr; text-align:left;">
+          </div>
+        </div>
+      </div>
+
+      <div class="card placeholder-card" style="text-align:right; padding:16px 18px; line-height:2.1;">
+        <b>راهنمای گرفتن cURL:</b><br>
+        ۱. در کروم وارد office.mizito.ir بشید و لاگین کنید<br>
+        ۲. کلید F12 را بزنید → تب Network<br>
+        ۳. یک وظیفهٔ جدید در پروژهٔ «امور اداری» ثبت کنید (مثل همیشه)<br>
+        ۴. روی درخواستی که به «tasks/add» می‌رود راست‌کلیک کنید<br>
+        ۵. Copy ← Copy as cURL را بزنید و همین‌جا بالا جای‌گذاری کنید
       </div>
     </section>
   </main>
@@ -186,6 +226,11 @@
         <label>توضیحات (اختیاری)</label>
         <textarea id="fNote" placeholder="یادداشت..."></textarea>
       </div>
+
+      <div class="sheet-actions" id="mzSendRow" style="display:none; margin-bottom:12px;">
+        <button class="btn ghost" id="btnSendMizito" style="flex:1;">📤 ارسال این روز به میزیتو</button>
+      </div>
+      <div class="mz-note" id="mzSendNote"></div>
 
       <div class="sheet-actions">
         <button class="btn danger-ghost" id="btnDeleteEntry">حذف</button>

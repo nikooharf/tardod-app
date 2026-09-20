@@ -10,6 +10,14 @@ const config: CapacitorConfig = {
   },
   ios: {
     backgroundColor: '#AE3A2E'
+  },
+  // Enabled only so the optional "sync to Mizito" feature (phase 7) can make a
+  // native HTTP request that isn't subject to browser CORS restrictions.
+  // Every other feature in the app remains fully offline and never touches this.
+  plugins: {
+    CapacitorHttp: {
+      enabled: true
+    }
   }
 };
 
