@@ -410,65 +410,169 @@ function buildMizitoNotes(entry){
   if(entry.note) lines.push(entry.note);
   return lines.join('\n');
 }
-function sendEntryToMizito(key){
+/* ---- Mizito helpers: smart sync (add / update / skip) ---- */
+function mzNormDigits(s){
+  return String(s == null ? '' : s)
+    .replace(/[\u06F0-\u06F9]/g, function(c){ return String(c.charCodeAt(0) - 0x06F0); })
+    .replace(/[\u0660-\u0669]/g, function(c){ return String(c.charCodeAt(0) - 0x0660); });
+}
+// "14050629" / "1405/06/29" / "۱۴۰۵۰۶۲۹"  ->  "14050629"
+function mzTitleKey(s){ return mzNormDigits(s).replace(/\D/g, ''); }
+function mzNormNotes(s){
+  return mzNormDigits(s).replace(/\r\n?/g, '\n').split('\n').map(function(l){ return l.trim(); }).join('\n').trim();
+}
+function mzHeaders(){
+  return {
+    'accept': 'application/json, text/plain, */*',
+    'content-type': 'application/json;charset=UTF-8',
+    'origin': 'https://office.mizito.ir',
+    'referer': 'https://office.mizito.ir/',
+    'x-token': DATA.settings.mizito.token
+  };
+}
+function mzPost(path, body){
+  return fetch('https://app.mizito.ir/api/' + path, {
+    method: 'POST', headers: mzHeaders(), body: JSON.stringify(body)
+  }).then(function(res){
+    if(!res.ok){
+      var e = new Error('HTTP ' + res.status); e.httpStatus = res.status; throw e;
+    }
+    return res.json();
+  });
+}
+function mzErrMessage(err){
+  if(err && err.httpStatus){
+    if(err.httpStatus === 401 || err.httpStatus === 403)
+      return 'توکن میزیتو منقضی شده — دوباره cURL را در تنظیمات جای‌گذاری کنید';
+    return 'خطای سرور میزیتو (' + err.httpStatus + ')';
+  }
+  return 'اتصال برقرار نشد — اینترنت را چک کنید' + (err && err.message ? ' (' + err.message + ')' : '');
+}
+// Fetch my own tasks only (same project + same board + same assignee), non-deleted.
+function fetchMizitoTasks(){
+  var m = DATA.settings.mizito;
+  return mzPost('tasks/upcoming', { project_id: m.project, kanban: true, from: null, filter: null })
+    .then(function(j){
+      var arr = Array.isArray(j) ? j : (j && (j.tasks || j.data || j.result || j.items));
+      if(!Array.isArray(arr)) throw new Error('پاسخ نامعتبر از میزیتو (لیست وظایف)');
+      return arr.filter(function(t){
+        return t && !t.deleted &&
+          t.kanban_board === m.board &&
+          Array.isArray(t.assignee) && t.assignee.indexOf(m.assignee) !== -1;
+      });
+    });
+}
+function findMizitoTask(tasks, title){
+  var k = mzTitleKey(title), found = null;
+  for(var i = 0; i < tasks.length; i++){
+    if(mzTitleKey(tasks[i].title) === k){
+      // if duplicates already exist, work on the oldest one
+      if(!found || String(tasks[i].created_at) < String(found.created_at)) found = tasks[i];
+    }
+  }
+  return found;
+}
+/* Sync one day. `tasks` is an optional pre-fetched list (used by the monthly bulk send).
+   Returns {ok, action:'added'|'updated'|'unchanged', message?} */
+function syncEntryToMizito(key, tasks){
   var m = DATA.settings.mizito;
   var entry = getEntry(key);
   if(!mizitoConfigured() || !entry) return Promise.resolve({ok:false, message:'تنظیمات میزیتو کامل نیست'});
-  var date = keyToDate(key);
-  var payload = {
-    title: jalaliCompact(date),
-    notes: buildMizitoNotes(entry),
-    assignee: [m.assignee],
-    project: m.project,
-    kanban_board: m.board,
-    labels: [], attachments: [], deleted: false, alarm_options: null,
-    progress: 0, weight: 1, comment: "", responsible: null, insert_to_chat_group: true
-  };
-  return fetch('https://app.mizito.ir/api/tasks/add', {
-    method: 'POST',
-    headers: {
-      'accept': 'application/json, text/plain, */*',
-      'content-type': 'application/json;charset=UTF-8',
-      'origin': 'https://office.mizito.ir',
-      'referer': 'https://office.mizito.ir/',
-      'x-token': m.token
-    },
-    body: JSON.stringify(payload)
-  }).then(function(res){
-    if(!res.ok) return { ok:false, message: 'خطای سرور ('+res.status+') — شاید توکن منقضی شده، دوباره cURL را در تنظیمات جای‌گذاری کنید' };
-    return res.json().then(function(j){
-      if(j && j._id){
-        entry.mizitoSentAt = Date.now();
-        setEntry(key, entry);
-        return { ok:true };
+  var title = jalaliCompact(keyToDate(key));
+  var notes = buildMizitoNotes(entry);
+
+  var listP = tasks ? Promise.resolve(tasks) : fetchMizitoTasks();
+  return listP.then(function(list){
+    var existing = findMizitoTask(list, title);
+
+    function markSent(task){
+      entry.mizitoSentAt = Date.now();
+      if(task && task._id) entry.mizitoTaskId = task._id;
+      setEntry(key, entry);
+    }
+
+    if(existing){
+      if(mzNormNotes(existing.notes) === mzNormNotes(notes)){
+        markSent(existing);
+        return { ok:true, action:'unchanged' };
       }
-      return { ok:false, message: (j && j.msg) ? j.msg : 'پاسخ نامعتبر از میزیتو' };
+      // the day already exists but with different text -> edit it, never create a second one
+      var payload = {
+        task_id: existing._id,
+        token: existing.access_token,
+        title: existing.title,
+        notes: notes,
+        assignee: existing.assignee && existing.assignee.length ? existing.assignee : [m.assignee],
+        project: m.project,
+        kanban_board: existing.kanban_board || m.board,
+        labels: existing.labels || [],
+        attachments: existing.attachments || [],
+        checklist: existing.checklist || [],
+        deleted: false,
+        alarm_options: existing.alarm_options || null,
+        progress: existing.progress || 0,
+        responsible: existing.responsible || null,
+        comment: "",
+        insert_to_chat_group: true
+      };
+      return mzPost('tasks/save', payload).then(function(j){
+        if(j && j._id){
+          existing.notes = notes;                 // keep the cache fresh for the bulk run
+          if(j.access_token) existing.access_token = j.access_token;
+          markSent(j);
+          return { ok:true, action:'updated' };
+        }
+        return { ok:false, message:(j && j.msg) ? j.msg : 'ویرایش در میزیتو ناموفق بود (برای جلوگیری از تکراری شدن، چیزی اضافه نشد)' };
+      });
+    }
+
+    // not on the board yet -> create
+    var addPayload = {
+      title: title, notes: notes, assignee: [m.assignee],
+      project: m.project, kanban_board: m.board,
+      labels: [], attachments: [], deleted: false, alarm_options: null,
+      progress: 0, weight: 1, comment: "", responsible: null, insert_to_chat_group: true
+    };
+    return mzPost('tasks/add', addPayload).then(function(j){
+      if(j && j._id){
+        list.push(j);                              // a repeat inside the same run can't duplicate
+        markSent(j);
+        return { ok:true, action:'added' };
+      }
+      return { ok:false, message:(j && j.msg) ? j.msg : 'پاسخ نامعتبر از میزیتو' };
     });
   }).catch(function(err){
-    return { ok:false, message: 'اتصال برقرار نشد — اینترنت را چک کنید ('+(err&&err.message?err.message:'')+')' };
+    return { ok:false, message: mzErrMessage(err) };
   });
 }
+function sendEntryToMizito(key){ return syncEntryToMizito(key, null); }
 function sendMonthToMizito(jy, jm, onProgress){
   var info = jalaliMonthInfo(jy, jm);
   var keys = [];
-  for(var d=1; d<=info.days; d++){
+  for(var d = 1; d <= info.days; d++){
     var date = new Date(info.start.getTime());
-    date.setDate(date.getDate()+(d-1));
+    date.setDate(date.getDate() + (d - 1));
     var key = dateKeyOf(date);
-    var entry = getEntry(key);
-    if(entry && !entry.mizitoSentAt) keys.push(key);
+    if(getEntry(key)) keys.push(key);
   }
-  var sent = 0, failed = 0, i = 0;
-  function next(){
-    if(i >= keys.length){ return Promise.resolve({sent:sent, failed:failed, total:keys.length}); }
-    var key = keys[i++];
-    return sendEntryToMizito(key).then(function(r){
-      if(r.ok) sent++; else failed++;
-      if(onProgress) onProgress(sent+failed, keys.length);
-      return next();
-    });
-  }
-  return next();
+  var res = { added:0, updated:0, unchanged:0, failed:0, total:keys.length, firstError:'' };
+  if(!keys.length) return Promise.resolve(res);
+  return fetchMizitoTasks().then(function(list){
+    var i = 0;
+    function next(){
+      if(i >= keys.length) return Promise.resolve(res);
+      var key = keys[i++];
+      return syncEntryToMizito(key, list).then(function(r){
+        if(r.ok) res[r.action]++; else { res.failed++; if(!res.firstError) res.firstError = r.message || ''; }
+        if(onProgress) onProgress(i, keys.length);
+        return next();
+      });
+    }
+    return next();
+  }).catch(function(err){
+    res.failed = keys.length; res.firstError = mzErrMessage(err);
+    return res;
+  });
 }
 
 /* ---------------- Entry edit sheet (shared: today + any date) ---------------- */
@@ -527,8 +631,11 @@ document.getElementById('btnSendMizito').addEventListener('click', function(){
     btn.disabled = false;
     if(r.ok){
       note.className = 'mz-note ok';
-      note.textContent = 'با موفقیت ارسال شد ✓';
-      showToast('به میزیتو ارسال شد');
+      var msg = r.action === 'added' ? 'در میزیتو ثبت شد ✓'
+              : r.action === 'updated' ? 'این روز در میزیتو بود؛ ویرایش شد ✓'
+              : 'این روز با همین محتوا در میزیتو بود؛ تغییری لازم نبود ✓';
+      note.textContent = msg;
+      showToast(msg);
     } else {
       note.className = 'mz-note err';
       note.textContent = r.message || 'ارسال ناموفق بود';
@@ -636,13 +743,14 @@ document.getElementById('btnMizitoBulk').addEventListener('click', function(){
     btn.disabled = false;
     if(r.total === 0){
       note.className = 'mz-note';
-      note.textContent = 'همه روزهای این ماه قبلاً ارسال شده‌اند (یا روزی برای ارسال نیست)';
+      note.textContent = 'در این ماه روزی برای ارسال ثبت نشده است';
     } else if(r.failed === 0){
       note.className = 'mz-note ok';
-      note.textContent = r.sent+' روز با موفقیت ارسال شد ✓';
+      note.textContent = r.added + ' جدید، ' + r.updated + ' ویرایش‌شده، ' + r.unchanged + ' بدون تغییر ✓';
     } else {
       note.className = 'mz-note err';
-      note.textContent = r.sent+' روز ارسال شد، '+r.failed+' روز ناموفق بود (احتمالاً توکن منقضی شده)';
+      note.textContent = r.added + ' جدید، ' + r.updated + ' ویرایش، ' + r.unchanged + ' بدون تغییر، ' + r.failed + ' ناموفق' +
+        (r.firstError ? ' — ' + r.firstError : '');
     }
     showToast('همگام‌سازی با میزیتو تمام شد');
   });
