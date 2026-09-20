@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>دفتر تردد</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="name">دفتر تردد</div>
+      <div class="date" id="topDate">—</div>
+    </div>
+    <div class="stamp-mark">ثبت</div>
+  </header>
+
+  <main>
+    <!-- TODAY -->
+    <section class="view active" id="view-today">
+      <div class="card clock-card">
+        <div class="clock-status" id="todayStatusLabel">هنوز ورود ثبت نشده</div>
+        <div class="clock-time" id="liveClock">--:--</div>
+        <div class="clock-sub" id="todaySub">برای شروع، ورود را ثبت کنید</div>
+        <button class="stamp-btn in" id="mainStampBtn"><span class="stamp-icon"></span><span id="mainStampLabel">ثبت ورود</span></button>
+        <div class="quick-row">
+          <button class="quick-btn" id="btnRemoteToggle">دورکاری امروز</button>
+          <button class="quick-btn" id="btnLeaveToday">مرخصی امروز</button>
+          <button class="quick-btn" id="btnHolidayPick">تعطیل رسمی یک روز</button>
+          <button class="quick-btn" id="btnEditToday">ویرایش دستی</button>
+        </div>
+      </div>
+
+      <div class="section-title">وضعیت این ماه</div>
+      <div class="card">
+        <div class="month-stats" id="todayMonthStats"></div>
+        <div class="today-summary">
+          <div>
+            <div class="label">مانده تا سقف کارکرد استاندارد</div>
+            <div class="val" id="todayRemainingLabel">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CALENDAR -->
+    <section class="view" id="view-calendar">
+      <div class="month-nav">
+        <button class="nav-btn" id="calPrev">‹</button>
+        <div class="mtitle" id="calMonthTitle">—</div>
+        <button class="nav-btn" id="calNext">›</button>
+      </div>
+      <div class="month-stats" id="calMonthStats"></div>
+      <div class="card" style="padding:6px 14px;">
+        <div id="calDayList"></div>
+      </div>
+    </section>
+
+    <!-- REPORT -->
+    <section class="view" id="view-report">
+      <div class="section-title">انتخاب ماه گزارش</div>
+      <div class="card">
+        <div class="month-nav" style="margin-bottom:0;">
+          <button class="nav-btn" id="repPrev">‹</button>
+          <div class="mtitle" id="repMonthTitle">—</div>
+          <button class="nav-btn" id="repNext">›</button>
+        </div>
+      </div>
+
+      <div class="section-title">خلاصه</div>
+      <div class="card">
+        <div class="report-grid" id="repGrid"></div>
+      </div>
+
+      <button class="export-btn" id="btnExport">📊 دریافت فایل اکسل این ماه</button>
+      <div class="hint" id="exportHint">فایل اکسل شامل جدول کامل روزهای ماه، ساعت ورود و خروج، مدت کارکرد، مرخصی‌ها، تعطیلات رسمی و جمع‌بندی نهایی است — آماده ارسال برای واحد منابع انسانی از طریق تلگرام، ایمیل یا هر اپ دیگری روی گوشی.</div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <div class="section-title">اطلاعات فردی</div>
+      <div class="card">
+        <div class="field">
+          <label>نام و نام خانوادگی</label>
+          <input type="text" id="setName" placeholder="برای درج در گزارش اکسل">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>سقف ساعت کاری استاندارد در روز</label>
+          <input type="number" id="setStdHours" min="1" max="16" step="0.5">
+        </div>
+      </div>
+
+      <div class="section-title">روزهای کاری هفته</div>
+      <div class="card">
+        <div class="weekday-grid" id="weekdayGrid"></div>
+      </div>
+
+      <div class="section-title">داده‌ها</div>
+      <div class="card">
+        <button class="row-btn" id="btnBackup"><span>خروجی پشتیبان (JSON)</span><span>›</span></button>
+        <button class="row-btn" id="btnRestore"><span>بازیابی از فایل پشتیبان</span><span>›</span></button>
+        <input type="file" id="restoreFile" accept="application/json" style="display:none">
+        <button class="row-btn danger" id="btnReset" style="margin-bottom:0;"><span>پاک‌کردن کامل اطلاعات</span><span>›</span></button>
+      </div>
+
+      <div class="section-title">درباره</div>
+      <div class="card">
+        <div class="about-text">
+          تمام اطلاعات فقط داخل همین گوشی ذخیره می‌شود؛ این اپ به هیچ سروری وصل نیست و بدون اینترنت کار می‌کند.
+          چون پشتیبان سروری وجود ندارد، هر چند وقت یک‌بار از «خروجی پشتیبان» استفاده کنید تا در صورت حذف اپ یا تعویض گوشی، اطلاعات از بین نرود.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button class="tab active" data-view="today">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <span>امروز</span>
+    </button>
+    <button class="tab" data-view="calendar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>
+      <span>تقویم</span>
+    </button>
+    <button class="tab" data-view="report">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+      <span>گزارش</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.9 7.9 0 000-2l2-1.5-2-3.4-2.3.9a8 8 0 00-1.7-1L15 3h-4l-.4 2.9a8 8 0 00-1.7 1l-2.3-.9-2 3.4L6.6 11a7.9 7.9 0 000 2l-2 1.6 2 3.4 2.3-.9a8 8 0 001.7 1L11 21h4l.4-2.9a8 8 0 001.7-1l2.3.9 2-3.4-2-1.6z"/></svg>
+      <span>تنظیمات</span>
+    </button>
+  </nav>
+
+  <!-- main entry edit sheet (today / any specific day) -->
+  <div class="sheet-backdrop" id="sheetBackdrop">
+    <div class="sheet" id="entrySheet">
+      <div class="sheet-handle"></div>
+      <h3 id="sheetTitle">ویرایش روز</h3>
+
+      <div class="seg" id="segType">
+        <button data-v="normal">حضوری</button>
+        <button data-v="remote">دورکاری</button>
+        <button data-v="leave_full">مرخصی روزانه</button>
+        <button data-v="leave_hours">مرخصی ساعتی</button>
+        <button data-v="holiday">تعطیل رسمی</button>
+        <button data-v="off">پاک‌کردن ثبت</button>
+      </div>
+
+      <div id="blockTimes">
+        <div class="time-row">
+          <div class="field"><label>ساعت ورود</label><input type="time" id="fIn"></div>
+          <div class="field"><label>ساعت خروج</label><input type="time" id="fOut"></div>
+        </div>
+      </div>
+
+      <div id="blockLeaveType" style="display:none;">
+        <div class="field">
+          <label>نوع مرخصی</label>
+          <select id="fLeaveType">
+            <option value="استحقاقی">استحقاقی</option>
+            <option value="استعلاجی">استعلاجی</option>
+            <option value="بدون‌حقوق">بدون‌حقوق</option>
+            <option value="اداری">اداری</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="blockLeaveHours" style="display:none;">
+        <div class="field">
+          <label>تعداد ساعت مرخصی</label>
+          <input type="number" id="fLeaveHours" min="0.5" max="12" step="0.5">
+        </div>
+      </div>
+
+      <div id="blockHolidayNote" style="display:none;">
+        <div class="field" style="margin-bottom:0;">
+          <label>عنوان تعطیلی (اختیاری)</label>
+          <input type="text" id="fHolidayTitle" placeholder="مثلاً: تعطیل رسمی به مناسبت...">
+        </div>
+      </div>
+
+      <div class="field" id="blockNote">
+        <label>توضیحات (اختیاری)</label>
+        <textarea id="fNote" placeholder="یادداشت..."></textarea>
+      </div>
+
+      <div class="sheet-actions">
+        <button class="btn danger-ghost" id="btnDeleteEntry">حذف</button>
+        <button class="btn ghost" id="btnCancelEntry">انصراف</button>
+        <button class="btn primary" id="btnSaveEntry">ذخیره</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- lightweight date-picker sheet, used for "official holiday for another day" -->
+  <div class="sheet-backdrop" id="datePickBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h3>تعطیل رسمی برای کدام روز؟</h3>
+      <div class="field" style="margin-bottom:16px;">
+        <label>تاریخ</label>
+        <input type="date" id="fPickDate">
+      </div>
+      <div class="sheet-actions">
+        <button class="btn ghost" id="btnCancelDatePick">انصراف</button>
+        <button class="btn primary" id="btnConfirmDatePick">بعدی</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="js/vendor/xlsx.bundle.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

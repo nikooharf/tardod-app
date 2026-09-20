@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">دفتر تردد</string>
+    <string name="title_activity_main">دفتر تردد</string>
+    <string name="package_name">ir.local.tardod</string>
+    <string name="custom_url_scheme">ir.local.tardod</string>
+</resources>
