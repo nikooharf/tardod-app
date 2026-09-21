@@ -5,7 +5,7 @@
 var STORE_KEY = "tarad_data_v2";
 var DEFAULT_DATA = {
   settings: { employeeName: "", stdHours: 8, workDays: [6,0,1,2,3],
-    mizito: { token: "", project: "", board: "", assignee: "" } },
+    mizito: { token: "", project: "", board: "", assignee: "", username: "", passHash: "" } },
   entries: {}
 };
 function loadData(){
@@ -18,6 +18,9 @@ function loadData(){
     if(typeof d.settings.stdHours !== "number") d.settings.stdHours = 8;
     if(!Array.isArray(d.settings.workDays)) d.settings.workDays = [6,0,1,2,3];
     if(!d.settings.mizito) d.settings.mizito = { token:"", project:"", board:"", assignee:"" };
+    ["token","project","board","assignee","username","passHash"].forEach(function(k){
+      if(typeof d.settings.mizito[k] !== "string") d.settings.mizito[k] = "";
+    });
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULT_DATA)); }
 }
@@ -382,16 +385,36 @@ function parseMizitoCurl(text){
   if(!text || !text.trim()) return null;
   var tokenMatch = text.match(/-H\s+'x-token:\s*([^']+)'/i) || text.match(/-H\s+"x-token:\s*([^"]+)"/i);
   var dataMatch = text.match(/--data-raw\s+'([\s\S]*)'\s*$/) || text.match(/--data-raw\s+"([\s\S]*)"\s*$/) || text.match(/-d\s+'([\s\S]*)'\s*$/);
-  if(!tokenMatch || !dataMatch) return null;
-  var token = tokenMatch[1].trim();
+  if(!dataMatch) return null;
   var body;
   try{ body = JSON.parse(dataMatch[1]); }catch(e){ return null; }
   if(!body || !body.project || !body.kanban_board || !body.assignee || !body.assignee[0]) return null;
-  return { token: token, project: body.project, board: body.kanban_board, assignee: body.assignee[0] };
+  var out = { project: body.project, board: body.kanban_board, assignee: body.assignee[0] };
+  if(tokenMatch) out.token = tokenMatch[1].trim();   // optional now: the app can log in by itself
+  return out;
+}
+// Accepts the cURL of  /capi/session/create  (or just its JSON payload) -> {username, passHash}
+function parseMizitoLogin(text){
+  if(!text || !text.trim()) return null;
+  var user = null, pass = null;
+  var a = text.indexOf('{'), b = text.lastIndexOf('}');
+  if(a !== -1 && b > a){
+    try{ var o = JSON.parse(text.slice(a, b+1)); user = o.username; pass = o.password; }catch(e){}
+  }
+  if(!user || !pass){
+    var um = text.match(/"username"\s*:\s*"([^"]+)"/), pm = text.match(/"password"\s*:\s*"([^"]+)"/);
+    if(um) user = um[1]; if(pm) pass = pm[1];
+  }
+  if(!user || !pass) return null;
+  return { username: String(user).trim(), passHash: String(pass).trim() };
+}
+function mzHasLogin(){
+  var m = DATA.settings.mizito;
+  return !!(m && m.username && m.passHash);
 }
 function mizitoConfigured(){
   var m = DATA.settings.mizito;
-  return !!(m && m.token && m.project && m.board && m.assignee);
+  return !!(m && m.project && m.board && m.assignee && (m.token || mzHasLogin()));
 }
 function buildMizitoNotes(entry){
   if(!entry) return "";
@@ -421,29 +444,77 @@ function mzTitleKey(s){ return mzNormDigits(s).replace(/\D/g, ''); }
 function mzNormNotes(s){
   return mzNormDigits(s).replace(/\r\n?/g, '\n').split('\n').map(function(l){ return l.trim(); }).join('\n').trim();
 }
-function mzHeaders(){
-  return {
+function mzHeaders(token){
+  var h = {
     'accept': 'application/json, text/plain, */*',
     'content-type': 'application/json;charset=UTF-8',
     'origin': 'https://office.mizito.ir',
-    'referer': 'https://office.mizito.ir/',
-    'x-token': DATA.settings.mizito.token
+    'referer': 'https://office.mizito.ir/'
   };
+  if(token) h['x-token'] = token;
+  return h;
 }
-function mzPost(path, body){
-  return fetch('https://app.mizito.ir/api/' + path, {
-    method: 'POST', headers: mzHeaders(), body: JSON.stringify(body)
+/* Automatic login: username + the (already hashed) password copied from the browser -> fresh x-token.
+   Single-flight so a bulk run never logs in twice at once. */
+var mzLoginPromise = null;
+function mzLogin(){
+  if(mzLoginPromise) return mzLoginPromise;
+  var m = DATA.settings.mizito;
+  if(!mzHasLogin()){ var ne = new Error('نام کاربری/رمز میزیتو ثبت نشده'); ne.login = true; return Promise.reject(ne); }
+  mzLoginPromise = fetch('https://app.mizito.ir/capi/session/create', {
+    method: 'POST', headers: mzHeaders(null),
+    body: JSON.stringify({ username: m.username, password: m.passHash, loginCode: null, regId: null })
   }).then(function(res){
-    if(!res.ok){
-      var e = new Error('HTTP ' + res.status); e.httpStatus = res.status; throw e;
-    }
+    if(!res.ok){ var e = new Error('HTTP ' + res.status); e.httpStatus = res.status; throw e; }
     return res.json();
+  }).then(function(j){
+    if(j && j.status === 1 && j.token){
+      DATA.settings.mizito.token = j.token;
+      saveData();
+      return j.token;
+    }
+    throw new Error((j && (j.msg || j.message)) ? (j.msg || j.message) : 'پاسخ نامعتبر از میزیتو');
+  }).then(function(t){ mzLoginPromise = null; return t; },
+          function(err){ mzLoginPromise = null; err.login = true; throw err; });
+  return mzLoginPromise;
+}
+function mzRaw(path, body, token){
+  return fetch('https://app.mizito.ir/api/' + path, {
+    method: 'POST', headers: mzHeaders(token), body: JSON.stringify(body)
+  }).then(function(res){
+    if(!res.ok){ var e = new Error('HTTP ' + res.status); e.httpStatus = res.status; throw e; }
+    return res.json();
+  }).then(function(j){
+    // some APIs answer 200 with {status:0,msg:..} when the token is bad
+    if(j && !Array.isArray(j) && typeof j.status === 'number' && j.status !== 1 && !j._id){
+      var e = new Error(j.msg || j.message || 'رد شد'); e.httpStatus = 401; e.soft = true; throw e;
+    }
+    return j;
+  });
+}
+/* POST with automatic token handling:
+   - no token yet  -> log in first
+   - server rejects the token (4xx) -> log in again, retry ONCE */
+function mzPost(path, body){
+  var m = DATA.settings.mizito;
+  var start = m.token ? Promise.resolve(m.token) : mzLogin();
+  return start.then(function(tok){
+    return mzRaw(path, body, tok).catch(function(err){
+      var retryable = err && err.httpStatus >= 400 && err.httpStatus < 500 && mzHasLogin();
+      if(!retryable) throw err;
+      return mzLogin().then(function(t2){ return mzRaw(path, body, t2); });
+    });
   });
 }
 function mzErrMessage(err){
+  if(err && err.login){
+    return 'ورود خودکار به میزیتو ناموفق بود — نام کاربری و رمز (هش‌شده) را دوباره در تنظیمات ثبت کنید' +
+           (err.message ? ' (' + err.message + ')' : '');
+  }
   if(err && err.httpStatus){
     if(err.httpStatus === 401 || err.httpStatus === 403)
-      return 'توکن میزیتو منقضی شده — دوباره cURL را در تنظیمات جای‌گذاری کنید';
+      return mzHasLogin() ? 'دسترسی رد شد (' + err.httpStatus + ')' + (err.soft && err.message ? ' — ' + err.message : '')
+                          : 'توکن میزیتو منقضی شده — نام کاربری و رمز را در تنظیمات ثبت کنید یا دوباره cURL را جای‌گذاری کنید';
     return 'خطای سرور میزیتو (' + err.httpStatus + ')';
   }
   return 'اتصال برقرار نشد — اینترنت را چک کنید' + (err && err.message ? ' (' + err.message + ')' : '');
@@ -693,6 +764,9 @@ function renderSettings(){
   renderWeekdayGrid();
   var m = DATA.settings.mizito;
   var box = document.getElementById('mzParsedBox');
+  document.getElementById('mzUser').value = (m && m.username) || '';
+  document.getElementById('mzPass').value = (m && m.passHash) || '';
+  document.getElementById('mzLoginState').textContent = mzHasLogin() ? 'ورود خودکار فعال است ✓' : 'ورود خودکار تنظیم نشده';
   if(m && (m.project || m.board || m.assignee || m.token)){
     box.style.display = 'block';
     document.getElementById('mzProject').value = m.project || '';
@@ -973,7 +1047,9 @@ function renderWeekdayGrid(){
   });
 }
 document.getElementById('btnBackup').addEventListener('click', function(){
-  var json = JSON.stringify(DATA, null, 2);
+  var copy = JSON.parse(JSON.stringify(DATA));
+  if(copy.settings && copy.settings.mizito){ copy.settings.mizito.token = ""; copy.settings.mizito.username = ""; copy.settings.mizito.passHash = ""; }
+  var json = JSON.stringify(copy, null, 2);
   var fname = 'tarad-backup-'+todayKey()+'.json';
   nativeSaveAndShare(fname, json, true).then(function(handledNatively){
     if(!handledNatively){
@@ -993,6 +1069,10 @@ document.getElementById('restoreFile').addEventListener('change', function(e){
     try{
       var d = JSON.parse(reader.result);
       if(!d.entries || !d.settings) throw new Error('bad file');
+      var keep = DATA.settings.mizito || {};
+      d.settings.mizito = d.settings.mizito || {};
+      ["project","board","assignee"].forEach(function(k){ if(typeof d.settings.mizito[k] !== "string") d.settings.mizito[k] = keep[k] || ""; });
+      d.settings.mizito.token = keep.token || ""; d.settings.mizito.username = keep.username || ""; d.settings.mizito.passHash = keep.passHash || "";
       DATA = d;
       saveData();
       showToast('بازیابی انجام شد');
@@ -1020,13 +1100,55 @@ document.getElementById('btnParseCurl').addEventListener('click', function(){
     note.textContent = 'متن cURL شناسایی نشد — مطمئن شوید کل دستور (شامل -H و --data-raw) را کپی کرده‌اید';
     return;
   }
-  DATA.settings.mizito = parsed;
+  var cur = DATA.settings.mizito;
+  DATA.settings.mizito = {
+    token: parsed.token || cur.token || "", project: parsed.project, board: parsed.board, assignee: parsed.assignee,
+    username: cur.username || "", passHash: cur.passHash || ""
+  };
   saveData();
   note.className = 'mz-note ok';
   note.textContent = 'با موفقیت استخراج و ذخیره شد ✓';
   document.getElementById('mzCurlInput').value = '';
   renderSettings();
   renderReport();
+});
+document.getElementById('btnParseLogin').addEventListener('click', function(){
+  var note = document.getElementById('mzLoginNote');
+  var p = parseMizitoLogin(document.getElementById('mzLoginInput').value);
+  if(!p){
+    note.className = 'mz-note err';
+    note.textContent = 'نام کاربری و رمز در متن پیدا نشد — cURL درخواست «session/create» (یا خود JSON آن) را جای‌گذاری کنید';
+    return;
+  }
+  DATA.settings.mizito.username = p.username;
+  DATA.settings.mizito.passHash = p.passHash;
+  saveData();
+  document.getElementById('mzLoginInput').value = '';
+  note.className = 'mz-note ok';
+  note.textContent = 'ذخیره شد ✓ — برای اطمینان «آزمایش ورود» را بزنید';
+  renderSettings(); renderReport();
+});
+['mzUser','mzPass'].forEach(function(id){
+  document.getElementById(id).addEventListener('change', function(){
+    DATA.settings.mizito[id === 'mzUser' ? 'username' : 'passHash'] = this.value.trim();
+    saveData(); renderSettings(); renderReport();
+  });
+});
+document.getElementById('btnTestLogin').addEventListener('click', function(){
+  var btn = this, note = document.getElementById('mzLoginNote');
+  btn.disabled = true; note.className = 'mz-note'; note.textContent = 'در حال ورود...';
+  mzLogin().then(function(){
+    btn.disabled = false; note.className = 'mz-note ok';
+    note.textContent = 'ورود موفق بود و توکن جدید گرفته شد ✓'; renderReport();
+  }).catch(function(err){
+    btn.disabled = false; note.className = 'mz-note err'; note.textContent = mzErrMessage(err);
+  });
+});
+document.getElementById('btnClearLogin').addEventListener('click', function(){
+  if(!confirm('نام کاربری، رمز و توکن میزیتو از این گوشی پاک شود؟')) return;
+  var m = DATA.settings.mizito; m.username = ""; m.passHash = ""; m.token = "";
+  saveData(); renderSettings(); renderReport();
+  showToast('اطلاعات ورود پاک شد');
 });
 ['mzProject','mzBoard','mzAssignee'].forEach(function(id){
   document.getElementById(id).addEventListener('change', function(){

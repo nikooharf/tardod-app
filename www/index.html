@@ -119,7 +119,7 @@
       <div class="card">
         <div class="about-text" style="margin-bottom:14px;">
           این بخش تنها بخشی از اپ است که به اینترنت نیاز دارد — و فقط وقتی که خودتان دکمهٔ ارسال را بزنید.
-          یک‌بار باید از مرورگر، دستور cURL درخواست «ثبت وظیفهٔ جدید» را از سایت میزیتو کپی کنید (راهنما پایین همین بخش) و اینجا جای‌گذاری کنید.
+          یک‌بار باید از مرورگر، دستور cURL درخواست «ثبت وظیفهٔ جدید» را از سایت میزیتو کپی کنید (راهنما پایین همین بخش) و اینجا جای‌گذاری کنید تا اپ بفهمد باید در کدام پروژه/ستون ثبت کند. برای تمدید خودکار توکن، بخش «ورود خودکار» را هم تکمیل کنید.
         </div>
         <div class="field">
           <label>متن cURL</label>
@@ -142,6 +142,39 @@
             <input type="text" id="mzAssignee" style="direction:ltr; text-align:left;">
           </div>
         </div>
+      </div>
+
+      <div class="section-title">ورود خودکار به میزیتو (توکن خودش تمدید می‌شود)</div>
+      <div class="card">
+        <div class="about-text" style="margin-bottom:14px;">
+          با ثبت نام کاربری و رمزِ هش‌شده، وقتی توکن منقضی شود اپ خودش دوباره وارد می‌شود و دیگر لازم نیست cURL جدید بگیرید.
+          رمز هش‌شده معادل خود رمز است؛ فقط روی همین گوشی می‌ماند و داخل فایل پشتیبان نوشته نمی‌شود.
+        </div>
+        <div class="field">
+          <label>cURL درخواست «session/create» (یا خود JSON آن)</label>
+          <textarea id="mzLoginInput" placeholder="curl 'https://app.mizito.ir/capi/session/create' ..." style="min-height:80px; font-family:monospace; font-size:11px; direction:ltr; text-align:left;"></textarea>
+        </div>
+        <button class="row-btn" id="btnParseLogin" style="margin-bottom:6px;"><span>استخراج نام کاربری و رمز</span><span>›</span></button>
+        <div class="field" style="margin-top:12px;">
+          <label>نام کاربری</label>
+          <input type="text" id="mzUser" autocomplete="off" style="direction:ltr; text-align:left;">
+        </div>
+        <div class="field">
+          <label>رمز هش‌شده</label>
+          <input type="password" id="mzPass" autocomplete="off" style="direction:ltr; text-align:left;">
+        </div>
+        <div class="mz-note" id="mzLoginState" style="margin-bottom:6px;"></div>
+        <button class="row-btn" id="btnTestLogin" style="margin-bottom:6px;"><span>آزمایش ورود</span><span>›</span></button>
+        <button class="row-btn" id="btnClearLogin"><span>پاک کردن اطلاعات ورود</span><span>›</span></button>
+        <div class="mz-note" id="mzLoginNote"></div>
+      </div>
+
+      <div class="card placeholder-card" style="text-align:right; padding:16px 18px; line-height:2.1;">
+        <b>راهنمای گرفتن cURL ورود:</b><br>
+        ۱. در کروم وارد office.mizito.ir شوید و F12 → تب Network را باز کنید<br>
+        ۲. از حساب خارج شوید و دوباره با نام کاربری و رمز وارد شوید<br>
+        ۳. روی درخواست «session/create» راست‌کلیک ← Copy ← Copy as cURL<br>
+        ۴. متن را در کادر «cURL درخواست session/create» بالا جای‌گذاری کنید
       </div>
 
       <div class="card placeholder-card" style="text-align:right; padding:16px 18px; line-height:2.1;">
