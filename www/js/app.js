@@ -4,10 +4,16 @@
 /* ---------------- Storage ---------------- */
 var STORE_KEY = "tarad_data_v2";
 var DEFAULT_DATA = {
-  settings: { employeeName: "", stdHours: 8, workDays: [6,0,1,2,3],
-    mizito: { token: "", project: "", board: "", assignee: "", username: "", passHash: "" } },
+  settings: {
+    employeeName: "", stdHours: 8, workDays: [6,0,1,2,3],
+    leaveCaps: { استحقاقی: 26, استعلاجی: 15, بدون‌حقوق: 0, اداری: 0 },
+    reminder: { enabled: true, afterMinutes: 90 },
+    mizito: { token: "", project: "", board: "", assignee: "", username: "", passHash: "" }
+  },
   entries: {}
 };
+var REMINDER_NOTIF_ID = 71001;
+var LEAVE_TYPES = ['استحقاقی','استعلاجی','بدون‌حقوق','اداری'];
 function loadData(){
   try{
     var raw = localStorage.getItem(STORE_KEY);
@@ -17,17 +23,41 @@ function loadData(){
     if(!d.entries) d.entries = {};
     if(typeof d.settings.stdHours !== "number") d.settings.stdHours = 8;
     if(!Array.isArray(d.settings.workDays)) d.settings.workDays = [6,0,1,2,3];
+    if(!d.settings.leaveCaps || typeof d.settings.leaveCaps !== 'object'){
+      d.settings.leaveCaps = JSON.parse(JSON.stringify(DEFAULT_DATA.settings.leaveCaps));
+    }
+    LEAVE_TYPES.forEach(function(t){
+      var v = d.settings.leaveCaps[t];
+      d.settings.leaveCaps[t] = (typeof v === 'number' && v >= 0) ? v : (DEFAULT_DATA.settings.leaveCaps[t] || 0);
+    });
+    if(!d.settings.reminder || typeof d.settings.reminder !== 'object'){
+      d.settings.reminder = JSON.parse(JSON.stringify(DEFAULT_DATA.settings.reminder));
+    }
+    if(typeof d.settings.reminder.enabled !== 'boolean') d.settings.reminder.enabled = true;
+    if(typeof d.settings.reminder.afterMinutes !== 'number' || d.settings.reminder.afterMinutes < 15){
+      d.settings.reminder.afterMinutes = 90;
+    }
     if(!d.settings.mizito) d.settings.mizito = { token:"", project:"", board:"", assignee:"" };
     ["token","project","board","assignee","username","passHash"].forEach(function(k){
       if(typeof d.settings.mizito[k] !== "string") d.settings.mizito[k] = "";
     });
+    var dirty = false;
+    Object.keys(d.entries).forEach(function(k){
+      var prev = d.entries[k];
+      var next = normalizeEntry(prev);
+      if(!Array.isArray(prev && prev.sessions)) dirty = true;
+      d.entries[k] = next;
+    });
+    if(dirty){
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(d)); }catch(e){}
+    }
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULT_DATA)); }
 }
 function saveData(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(DATA)); }catch(e){ showToast("ذخیره‌سازی ناموفق بود"); }
 }
-var DATA = loadData();
+var DATA = null; // set after helpers below
 
 /* ---------------- Date / Jalali helpers ---------------- */
 function pad2(n){ n = Math.floor(n); return (n<10? "0":"")+n; }
@@ -106,44 +136,229 @@ function fmtMinutesShort(min){
   return sign+h+":"+pad2(m);
 }
 
-/* ---------------- Entry helpers ---------------- */
+/* ---------------- Entry helpers (multi-session day model) ---------------- */
+function emptyEntry(){
+  return { sessions: [], leave: null, holiday: null, note: "", nextMode: "normal" };
+}
+function normalizeSession(s){
+  if(!s || !s.checkIn) return null;
+  return {
+    checkIn: String(s.checkIn),
+    checkOut: s.checkOut ? String(s.checkOut) : null,
+    mode: s.mode === 'remote' ? 'remote' : 'normal'
+  };
+}
+function normalizeLeave(leave){
+  if(!leave || typeof leave !== 'object') return null;
+  var lt = leave.leaveType || 'استحقاقی';
+  if(LEAVE_TYPES.indexOf(lt) === -1) lt = 'استحقاقی';
+  if(leave.kind === 'full') return { kind: 'full', leaveType: lt };
+  if(leave.kind === 'hours'){
+    return { kind: 'hours', leaveType: lt, leaveMinutes: Math.max(0, Math.round(leave.leaveMinutes || 0)) };
+  }
+  return null;
+}
+function migrateLegacyEntry(raw){
+  var e = emptyEntry();
+  e.note = typeof raw.note === 'string' ? raw.note : "";
+  if(raw.mizitoSentAt) e.mizitoSentAt = raw.mizitoSentAt;
+  if(raw.mizitoTaskId) e.mizitoTaskId = raw.mizitoTaskId;
+  if(raw.type === 'normal' || raw.type === 'remote'){
+    e.nextMode = raw.type === 'remote' ? 'remote' : 'normal';
+    if(raw.checkIn){
+      e.sessions = [{
+        checkIn: String(raw.checkIn),
+        checkOut: raw.checkOut ? String(raw.checkOut) : null,
+        mode: raw.type === 'remote' ? 'remote' : 'normal'
+      }];
+    }
+  } else if(raw.type === 'leave_full'){
+    e.leave = { kind: 'full', leaveType: raw.leaveType || 'استحقاقی' };
+  } else if(raw.type === 'leave_hours'){
+    e.leave = {
+      kind: 'hours',
+      leaveType: raw.leaveType || 'استحقاقی',
+      leaveMinutes: Math.max(0, Math.round(raw.leaveMinutes || 0))
+    };
+  } else if(raw.type === 'holiday'){
+    e.holiday = { title: raw.holidayTitle || "" };
+  }
+  return e;
+}
+function normalizeEntry(raw){
+  if(!raw) return null;
+  if(!Array.isArray(raw.sessions)) return migrateLegacyEntry(raw);
+  var e = emptyEntry();
+  e.sessions = raw.sessions.map(normalizeSession).filter(Boolean);
+  e.leave = normalizeLeave(raw.leave);
+  if(raw.holiday && typeof raw.holiday === 'object'){
+    e.holiday = { title: raw.holiday.title || "" };
+  } else {
+    e.holiday = null;
+  }
+  e.note = typeof raw.note === 'string' ? raw.note : "";
+  e.nextMode = raw.nextMode === 'remote' ? 'remote' : 'normal';
+  if(raw.mizitoSentAt) e.mizitoSentAt = raw.mizitoSentAt;
+  if(raw.mizitoTaskId) e.mizitoTaskId = raw.mizitoTaskId;
+  if(e.holiday){ e.sessions = []; e.leave = null; }
+  return e;
+}
+function entryHasContent(entry){
+  if(!entry) return false;
+  if(entry.holiday) return true;
+  if(entry.leave) return true;
+  if(entry.sessions && entry.sessions.length) return true;
+  if(entry.note) return true;
+  return false;
+}
+function entrySessions(entry){ return (entry && Array.isArray(entry.sessions)) ? entry.sessions : []; }
+function entryLeave(entry){ return entry && entry.leave ? entry.leave : null; }
+function openSession(entry){
+  var ss = entrySessions(entry);
+  if(!ss.length) return null;
+  var last = ss[ss.length - 1];
+  return last.checkOut ? null : last;
+}
+function sessionWorkedMinutes(s){
+  if(!s || !s.checkIn || !s.checkOut) return 0;
+  var mins = minutesBetween(s.checkIn, s.checkOut);
+  return mins == null ? 0 : mins;
+}
+function timeToMinutes(t){
+  if(!t) return null;
+  var p = String(t).split(':').map(Number);
+  return p[0]*60 + p[1];
+}
+function validateSessions(sessions){
+  for(var i = 0; i < sessions.length; i++){
+    var s = sessions[i];
+    if(!s.checkIn) return 'ساعت ورود جلسه '+(i+1)+' را وارد کنید';
+    if(!s.checkOut && i !== sessions.length - 1) return 'فقط آخرین جلسه می‌تواند بدون خروج باشد';
+    if(i > 0){
+      var prev = sessions[i - 1];
+      if(!prev.checkOut) return 'جلسه قبلی هنوز باز است';
+      var prevStart = timeToMinutes(prev.checkIn);
+      var prevEnd = timeToMinutes(prev.checkOut);
+      var start = timeToMinutes(s.checkIn);
+      if(prevEnd < prevStart) prevEnd += 24 * 60;
+      if(start < prevEnd) return 'زمان جلسات هم‌پوشانی دارد';
+    }
+  }
+  return null;
+}
 function getEntry(key){ return DATA.entries[key] || null; }
-function setEntry(key, entry){ DATA.entries[key] = entry; saveData(); }
+function setEntry(key, entry){
+  var n = normalizeEntry(entry);
+  if(!entryHasContent(n)){
+    if(n.nextMode === 'remote'){
+      DATA.entries[key] = { sessions: [], leave: null, holiday: null, note: "", nextMode: "remote" };
+      saveData();
+      return;
+    }
+    removeEntry(key);
+    return;
+  }
+  DATA.entries[key] = n;
+  saveData();
+}
 function removeEntry(key){ delete DATA.entries[key]; saveData(); }
 function isWeeklyWorkDay(date){ return DATA.settings.workDays.indexOf(date.getDay()) !== -1; }
-// A day counts toward the standard schedule only if it's a normal weekly work day
-// AND it hasn't been explicitly marked as an official holiday.
+// Work-day quota: weekly work day, not official holiday, and not leave-only full day.
 function isEffectiveWorkDay(date){
   var entry = getEntry(dateKeyOf(date));
-  if(entry && entry.type === 'holiday') return false;
+  if(entry && entry.holiday) return false;
+  if(entry && entry.leave && entry.leave.kind === 'full' && entrySessions(entry).length === 0) return false;
   return isWeeklyWorkDay(date);
 }
 
 function entryWorkedMinutes(entry){
-  if(!entry) return 0;
-  if(entry.type==='normal' || entry.type==='remote'){
-    var mins = minutesBetween(entry.checkIn, entry.checkOut);
-    return mins==null? 0 : mins;
-  }
-  if(entry.type==='leave_hours'){
-    var std = DATA.settings.stdHours*60;
-    var lv = (entry.leaveMinutes||0);
-    return Math.max(0, std - lv);
+  if(!entry || entry.holiday) return 0;
+  var sessions = entrySessions(entry);
+  var fromSessions = 0;
+  for(var i = 0; i < sessions.length; i++) fromSessions += sessionWorkedMinutes(sessions[i]);
+  if(fromSessions > 0) return fromSessions;
+  var leave = entryLeave(entry);
+  if(leave && leave.kind === 'hours'){
+    var std = DATA.settings.stdHours * 60;
+    return Math.max(0, std - (leave.leaveMinutes || 0));
   }
   return 0;
 }
-
+function entryStatusText(entry){
+  if(!entry) return '';
+  if(entry.holiday){
+    return 'تعطیل رسمی' + (entry.holiday.title ? (' — ' + entry.holiday.title) : '');
+  }
+  var parts = [];
+  var hasN = false, hasR = false;
+  entrySessions(entry).forEach(function(s){
+    if(s.mode === 'remote') hasR = true; else hasN = true;
+  });
+  if(hasN) parts.push('حضوری');
+  if(hasR) parts.push('دورکاری');
+  var leave = entryLeave(entry);
+  if(leave){
+    if(leave.kind === 'full') parts.push('مرخصی ('+(leave.leaveType || 'استحقاقی')+')');
+    else parts.push('مرخصی ساعتی');
+  }
+  return parts.join(' + ');
+}
+function entryTimesJoined(entry){
+  var sessions = entrySessions(entry);
+  if(!sessions.length) return { cin: '', cout: '' };
+  return {
+    cin: sessions.map(function(s){ return s.checkIn || '—'; }).join('؛ '),
+    cout: sessions.map(function(s){ return s.checkOut || '—'; }).join('؛ ')
+  };
+}
+function entryDetailText(entry){
+  if(!entry) return '';
+  if(entry.holiday) return entry.holiday.title || 'تعطیل رسمی';
+  var bits = [];
+  var sessions = entrySessions(entry);
+  if(sessions.length){
+    bits.push(sessions.map(function(s){
+      return (s.checkIn || '—') + '–' + (s.checkOut || '—');
+    }).join('؛ '));
+  }
+  var leave = entryLeave(entry);
+  if(leave){
+    if(leave.kind === 'full') bits.push(leave.leaveType || 'مرخصی');
+    else bits.push(((leave.leaveMinutes || 0) / 60) + ' ساعت مرخصی');
+  }
+  return bits.join(' · ');
+}
 function typeBadgeLabel(entry, date){
-  if(!entry){
+  if(!entry || !entryHasContent(entry)){
     return isWeeklyWorkDay(date) ? {cls:'missing', text:'ثبت نشده'} : {cls:'missing', text:'تعطیل هفتگی'};
   }
-  if(entry.type==='normal') return {cls:'normal', text:'حضوری'};
-  if(entry.type==='remote') return {cls:'remote', text:'دورکاری'};
-  if(entry.type==='leave_full') return {cls:'leave', text:'مرخصی ('+(entry.leaveType||'استحقاقی')+')'};
-  if(entry.type==='leave_hours') return {cls:'leave', text:'مرخصی ساعتی ('+((entry.leaveMinutes||0)/60)+' س)'};
-  if(entry.type==='holiday') return {cls:'holiday', text: entry.holidayTitle ? 'تعطیل رسمی — '+entry.holidayTitle : 'تعطیل رسمی'};
+  if(entry.holiday){
+    return {cls:'holiday', text: entry.holiday.title ? 'تعطیل رسمی — '+entry.holiday.title : 'تعطیل رسمی'};
+  }
+  var sessions = entrySessions(entry);
+  var leave = entryLeave(entry);
+  var hasWork = sessions.length > 0;
+  if(hasWork && leave){
+    return {cls:'leave', text: sessions.length > 1 ? ('مرخصی+'+sessions.length+' جلسه') : 'مرخصی+کار'};
+  }
+  if(leave){
+    if(leave.kind === 'full') return {cls:'leave', text:'مرخصی ('+(leave.leaveType||'استحقاقی')+')'};
+    return {cls:'leave', text:'مرخصی ساعتی ('+((leave.leaveMinutes||0)/60)+' س)'};
+  }
+  if(sessions.length > 1){
+    var mixed = sessions.some(function(s){ return s.mode === 'remote'; }) &&
+                sessions.some(function(s){ return s.mode !== 'remote'; });
+    return {cls: mixed ? 'remote' : (sessions[0].mode === 'remote' ? 'remote' : 'normal'), text: sessions.length+' جلسه'};
+  }
+  if(sessions.length === 1){
+    return sessions[0].mode === 'remote'
+      ? {cls:'remote', text:'دورکاری'}
+      : {cls:'normal', text:'حضوری'};
+  }
   return {cls:'missing', text:'—'};
 }
+
+DATA = loadData();
 
 /* ---------------- Aggregation (used by Today's monthly stats, and later Calendar/Report) ---------------- */
 function aggregateMonth(jy, jm){
@@ -158,18 +373,20 @@ function aggregateMonth(jy, jm){
     var entry = getEntry(key);
     var effWd = isEffectiveWorkDay(date);
     if(effWd){ workDayCount++; standardMinutes += DATA.settings.stdHours*60; }
-    if(entry){
-      if(entry.type==='normal'||entry.type==='remote'){
-        workedMinutes += entryWorkedMinutes(entry);
-      } else if(entry.type==='leave_full'){
-        leaveDays++;
-        leaveByType[entry.leaveType||'استحقاقی'] = (leaveByType[entry.leaveType||'استحقاقی']||0)+1;
-        workedMinutes += DATA.settings.stdHours*60;
-      } else if(entry.type==='leave_hours'){
-        leaveHoursTotal += (entry.leaveMinutes||0);
-        workedMinutes += entryWorkedMinutes(entry);
-      } else if(entry.type==='holiday'){
+    if(entry && entryHasContent(entry)){
+      if(entry.holiday){
         holidayDays++;
+      } else {
+        workedMinutes += entryWorkedMinutes(entry);
+        var leave = entryLeave(entry);
+        if(leave){
+          if(leave.kind === 'full'){
+            leaveDays++;
+            leaveByType[leave.leaveType||'استحقاقی'] = (leaveByType[leave.leaveType||'استحقاقی']||0)+1;
+          } else if(leave.kind === 'hours'){
+            leaveHoursTotal += (leave.leaveMinutes||0);
+          }
+        }
       }
     } else if(effWd && date <= today0){
       missingDays++;
@@ -183,6 +400,51 @@ function aggregateMonth(jy, jm){
     leaveHoursTotal: leaveHoursTotal, leaveByType: leaveByType,
     missingDays: missingDays, holidayDays: holidayDays
   };
+}
+
+function leaveDayEquivalent(leave){
+  if(!leave) return 0;
+  if(leave.kind === 'full') return 1;
+  var std = DATA.settings.stdHours * 60;
+  if(!std) return 0;
+  return (leave.leaveMinutes || 0) / std;
+}
+function aggregateYearLeave(jy){
+  var used = {};
+  LEAVE_TYPES.forEach(function(t){ used[t] = 0; });
+  Object.keys(DATA.entries).forEach(function(key){
+    var p = jalaliPartsOf(keyToDate(key));
+    if(p.y !== jy) return;
+    var leave = entryLeave(getEntry(key));
+    if(!leave) return;
+    var t = leave.leaveType || 'استحقاقی';
+    if(used[t] == null) used[t] = 0;
+    used[t] += leaveDayEquivalent(leave);
+  });
+  return used;
+}
+function fmtLeaveDays(n){
+  var x = Math.round((n || 0) * 100) / 100;
+  return (x % 1 === 0) ? String(x) : x.toFixed(2);
+}
+function entryMatchesFilter(entry, date, filter){
+  if(filter === 'all' || !filter) return true;
+  if(!entry || !entryHasContent(entry)) return false;
+  if(filter === 'remote'){
+    return entrySessions(entry).some(function(s){ return s.mode === 'remote'; });
+  }
+  if(filter === 'leave') return !!entryLeave(entry);
+  if(filter === 'overtime'){
+    var mins = entryWorkedMinutes(entry);
+    return mins > DATA.settings.stdHours * 60;
+  }
+  return true;
+}
+function filterLabel(filter){
+  if(filter === 'remote') return 'دورکاری';
+  if(filter === 'leave') return 'مرخصی';
+  if(filter === 'overtime') return 'اضافه‌کار';
+  return 'همه';
 }
 
 /* ---------------- Toast ---------------- */
@@ -232,45 +494,58 @@ function renderToday(){
   var liveClock = document.getElementById('liveClock');
   var btn = document.getElementById('mainStampBtn');
   var btnLabel = document.getElementById('mainStampLabel');
+  var remoteBtn = document.getElementById('btnRemoteToggle');
 
   clearInterval(clockTimer);
 
-  if(entry && entry.type==='holiday'){
+  var open = openSession(entry);
+  var sessions = entrySessions(entry);
+  var leave = entryLeave(entry);
+  var nextMode = (entry && entry.nextMode === 'remote') ? 'remote' : 'normal';
+  if(open) nextMode = open.mode;
+  remoteBtn.textContent = nextMode === 'remote' ? 'حضوری بعدی' : 'دورکاری بعدی';
+
+  if(entry && entry.holiday){
     statusLabel.textContent = 'امروز تعطیل رسمی است';
-    liveClock.textContent = entry.holidayTitle || 'تعطیل رسمی';
+    liveClock.textContent = entry.holiday.title || 'تعطیل رسمی';
     sub.textContent = entry.note ? entry.note : 'برای تغییر، ویرایش دستی را بزنید';
     btn.style.display = 'none';
-  } else if(entry && entry.type==='leave_full'){
-    statusLabel.textContent = 'امروز مرخصی ثبت شده';
-    liveClock.textContent = entry.leaveType || 'مرخصی';
-    sub.textContent = entry.note ? entry.note : 'برای تغییر، ویرایش دستی را بزنید';
-    btn.style.display = 'none';
-  } else if(entry && (entry.type==='normal'||entry.type==='remote') && entry.checkIn && !entry.checkOut){
-    statusLabel.textContent = (entry.type==='remote'?'دورکاری — ':'')+'در حال کار از ساعت '+entry.checkIn;
+  } else if(open){
+    statusLabel.textContent = (open.mode==='remote'?'دورکاری — ':'')+'در حال کار از ساعت '+open.checkIn;
+    if(sessions.length > 1 || leave){
+      statusLabel.textContent += sessions.length > 1 ? (' (جلسه '+sessions.length+')') : '';
+    }
     btn.style.display = 'flex';
     btn.className = 'stamp-btn out';
     btnLabel.textContent = 'ثبت خروج';
     btn.disabled = false;
     (function(){
       function tick(){
-        var mins = minutesBetween(entry.checkIn, new Date().toTimeString().slice(0,5));
+        var mins = minutesBetween(open.checkIn, new Date().toTimeString().slice(0,5));
         liveClock.textContent = fmtMinutesShort(mins);
-        sub.textContent = 'مدت حضور تا این لحظه';
+        var parts = ['مدت حضور تا این لحظه'];
+        if(leave){
+          parts.push(leave.kind==='full' ? ('مرخصی '+ (leave.leaveType||'')) : (((leave.leaveMinutes||0)/60)+' س مرخصی'));
+        }
+        sub.textContent = parts.join(' · ');
       }
       tick();
       clockTimer = setInterval(tick, 15000);
     })();
-  } else if(entry && (entry.type==='normal'||entry.type==='remote') && entry.checkIn && entry.checkOut){
-    var mins = minutesBetween(entry.checkIn, entry.checkOut);
-    statusLabel.textContent = (entry.type==='remote'?'دورکاری امروز ثبت شد':'حضور امروز ثبت شد');
-    liveClock.textContent = fmtMinutesShort(mins);
-    sub.textContent = entry.checkIn+' تا '+entry.checkOut;
-    btn.style.display = 'none';
+  } else if(sessions.length || leave){
+    var worked = entryWorkedMinutes(entry);
+    statusLabel.textContent = entryStatusText(entry) || 'امروز ثبت شده';
+    liveClock.textContent = fmtMinutesShort(worked);
+    sub.textContent = entryDetailText(entry) || (entry.note || 'می‌توانید جلسهٔ جدید ثبت کنید');
+    btn.style.display = 'flex';
+    btn.className = 'stamp-btn in';
+    btnLabel.textContent = 'ثبت ورود جدید';
+    btn.disabled = false;
   } else {
     statusLabel.textContent = 'هنوز ورود ثبت نشده';
     liveClock.textContent = new Date().toTimeString().slice(0,5);
     clockTimer = setInterval(function(){ liveClock.textContent = new Date().toTimeString().slice(0,5); }, 1000*20);
-    sub.textContent = 'برای شروع، ورود را ثبت کنید';
+    sub.textContent = nextMode === 'remote' ? 'ورود بعدی به‌عنوان دورکاری ثبت می‌شود' : 'برای شروع، ورود را ثبت کنید';
     btn.style.display = 'flex';
     btn.className = 'stamp-btn in';
     btnLabel.textContent = 'ثبت ورود';
@@ -291,36 +566,43 @@ function renderToday(){
 
 document.getElementById('mainStampBtn').addEventListener('click', function(){
   var key = todayKey();
-  var entry = getEntry(key);
+  var entry = getEntry(key) || emptyEntry();
+  if(entry.holiday){ showToast('امروز تعطیل رسمی است — ابتدا آن را ویرایش کنید'); return; }
   var now = new Date().toTimeString().slice(0,5);
-  if(!entry || !entry.checkIn){
-    entry = entry || {};
-    entry.type = entry.type || 'normal';
-    entry.checkIn = now;
-    entry.checkOut = null;
-    setEntry(key, entry);
-    showToast('ورود ثبت شد: '+now);
-  } else if(!entry.checkOut){
-    entry.checkOut = now;
+  var open = openSession(entry);
+  if(open){
+    open.checkOut = now;
     setEntry(key, entry);
     showToast('خروج ثبت شد: '+now);
+  } else {
+    var mode = entry.nextMode === 'remote' ? 'remote' : 'normal';
+    entry.sessions.push({ checkIn: now, checkOut: null, mode: mode });
+    setEntry(key, entry);
+    showToast((mode==='remote'?'دورکاری — ':'')+'ورود ثبت شد: '+now);
   }
+  syncOpenSessionReminder();
   renderToday();
 });
 
 document.getElementById('btnRemoteToggle').addEventListener('click', function(){
   var key = todayKey();
-  var entry = getEntry(key) || { type:'normal', checkIn:null, checkOut:null };
-  if(entry.type==='leave_full' || entry.type==='leave_hours' || entry.type==='holiday'){
-    showToast('امروز حالت دیگری ثبت شده — ابتدا آن را ویرایش کنید'); return;
+  var entry = getEntry(key) || emptyEntry();
+  if(entry.holiday){ showToast('امروز تعطیل رسمی است — ابتدا آن را ویرایش کنید'); return; }
+  var open = openSession(entry);
+  if(open){
+    open.mode = open.mode === 'remote' ? 'normal' : 'remote';
+    entry.nextMode = open.mode;
+    setEntry(key, entry);
+    showToast(open.mode === 'remote' ? 'این جلسه دورکاری شد' : 'این جلسه حضوری شد');
+  } else {
+    entry.nextMode = entry.nextMode === 'remote' ? 'normal' : 'remote';
+    setEntry(key, entry);
+    showToast(entry.nextMode === 'remote' ? 'ورود بعدی دورکاری خواهد بود' : 'ورود بعدی حضوری خواهد بود');
   }
-  entry.type = (entry.type==='remote') ? 'normal' : 'remote';
-  setEntry(key, entry);
-  showToast(entry.type==='remote' ? 'امروز به‌عنوان دورکاری ثبت شد' : 'امروز به‌عنوان حضوری ثبت شد');
   renderToday();
 });
 
-document.getElementById('btnLeaveToday').addEventListener('click', function(){ openSheet(todayKey()); });
+document.getElementById('btnLeaveToday').addEventListener('click', function(){ openSheet(todayKey(), null, 'leave'); });
 document.getElementById('btnEditToday').addEventListener('click', function(){ openSheet(todayKey()); });
 
 /* ---------------- CALENDAR view ---------------- */
@@ -344,17 +626,11 @@ function renderCalendar(){
     var key = dateKeyOf(date);
     var entry = getEntry(key);
     var wd = isWeeklyWorkDay(date);
-    var isHoliday = entry && entry.type==='holiday';
+    var isHoliday = !!(entry && entry.holiday);
     var badge = typeBadgeLabel(entry, date);
     var detail = '';
-    if(entry && (entry.type==='normal'||entry.type==='remote')){
-      detail = (entry.checkIn||'—')+' – '+(entry.checkOut||'—');
-    } else if(entry && entry.type==='leave_hours'){
-      detail = ((entry.leaveMinutes||0)/60)+' ساعت مرخصی';
-    } else if(entry && entry.type==='leave_full'){
-      detail = entry.leaveType||'مرخصی';
-    } else if(isHoliday){
-      detail = entry.holidayTitle || 'تعطیل رسمی';
+    if(entry && entryHasContent(entry)){
+      detail = entryDetailText(entry) || entry.note || '—';
     } else {
       detail = wd ? 'بدون ثبت' : 'تعطیل هفتگی';
     }
@@ -419,16 +695,25 @@ function mizitoConfigured(){
 function buildMizitoNotes(entry){
   if(!entry) return "";
   var lines = [];
-  if(entry.type==='normal' || entry.type==='remote'){
-    if(entry.type==='remote') lines.push('دورکاری');
-    lines.push('ساعت ورود: '+(entry.checkIn||'—'));
-    lines.push('ساعت خروج: '+(entry.checkOut||'—'));
-  } else if(entry.type==='leave_full'){
-    lines.push('مرخصی روزانه ('+(entry.leaveType||'استحقاقی')+')');
-  } else if(entry.type==='leave_hours'){
-    lines.push('مرخصی ساعتی: '+((entry.leaveMinutes||0)/60)+' ساعت');
-  } else if(entry.type==='holiday'){
-    lines.push('تعطیل رسمی'+(entry.holidayTitle? (': '+entry.holidayTitle):''));
+  if(entry.holiday){
+    lines.push('تعطیل رسمی'+(entry.holiday.title ? (': '+entry.holiday.title) : ''));
+  } else {
+    var sessions = entrySessions(entry);
+    sessions.forEach(function(s, idx){
+      var label = s.mode === 'remote' ? 'دورکاری' : 'حضوری';
+      if(sessions.length === 1){
+        lines.push(label);
+        lines.push('ساعت ورود: '+(s.checkIn||'—'));
+        lines.push('ساعت خروج: '+(s.checkOut||'—'));
+      } else {
+        lines.push('جلسه '+(idx+1)+' ('+label+'): '+(s.checkIn||'—')+' – '+(s.checkOut||'—'));
+      }
+    });
+    var leave = entryLeave(entry);
+    if(leave){
+      if(leave.kind === 'full') lines.push('مرخصی روزانه ('+(leave.leaveType||'استحقاقی')+')');
+      else lines.push('مرخصی ساعتی: '+((leave.leaveMinutes||0)/60)+' ساعت');
+    }
   }
   if(entry.note) lines.push(entry.note);
   return lines.join('\n');
@@ -548,7 +833,7 @@ function findMizitoTask(tasks, title){
 function syncEntryToMizito(key, tasks){
   var m = DATA.settings.mizito;
   var entry = getEntry(key);
-  if(!mizitoConfigured() || !entry) return Promise.resolve({ok:false, message:'تنظیمات میزیتو کامل نیست'});
+  if(!mizitoConfigured() || !entry || !entryHasContent(entry)) return Promise.resolve({ok:false, message:'تنظیمات میزیتو کامل نیست'});
   var title = jalaliCompact(keyToDate(key));
   var notes = buildMizitoNotes(entry);
 
@@ -624,7 +909,8 @@ function sendMonthToMizito(jy, jm, onProgress){
     var date = new Date(info.start.getTime());
     date.setDate(date.getDate() + (d - 1));
     var key = dateKeyOf(date);
-    if(getEntry(key)) keys.push(key);
+    var ent = getEntry(key);
+    if(ent && entryHasContent(ent)) keys.push(key);
   }
   var res = { added:0, updated:0, unchanged:0, failed:0, total:keys.length, firstError:'' };
   if(!keys.length) return Promise.resolve(res);
@@ -648,24 +934,93 @@ function sendMonthToMizito(jy, jm, onProgress){
 
 /* ---------------- Entry edit sheet (shared: today + any date) ---------------- */
 var sheetKey = null;
-var sheetType = 'normal';
-function openSheet(key, forceType){
+var sheetSessions = [];
+var sheetFocusLeave = false;
+
+function renderSheetSessions(){
+  var box = document.getElementById('sheetSessions');
+  if(!sheetSessions.length){
+    box.innerHTML = '<div class="session-empty">جلسه‌ای ثبت نشده — «افزودن جلسه» را بزنید</div>';
+    return;
+  }
+  box.innerHTML = sheetSessions.map(function(s, i){
+    return '<div class="session-row" data-i="'+i+'">'+
+      '<div class="session-head"><span>جلسه '+(i+1)+'</span>'+
+      '<button type="button" class="session-del" data-del="'+i+'">حذف</button></div>'+
+      '<div class="time-row">'+
+      '<div class="field"><label>ورود</label><input type="time" data-f="in" data-i="'+i+'" value="'+(s.checkIn||'')+'"></div>'+
+      '<div class="field"><label>خروج</label><input type="time" data-f="out" data-i="'+i+'" value="'+(s.checkOut||'')+'"></div>'+
+      '</div>'+
+      '<div class="seg session-mode" data-i="'+i+'">'+
+      '<button type="button" data-mode="normal"'+(s.mode!=='remote'?' class="on"':'')+'>حضوری</button>'+
+      '<button type="button" data-mode="remote"'+(s.mode==='remote'?' class="on"':'')+'>دورکاری</button>'+
+      '</div></div>';
+  }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('input[type=time]'), function(inp){
+    inp.addEventListener('change', function(){
+      var i = parseInt(inp.getAttribute('data-i'), 10);
+      var f = inp.getAttribute('data-f');
+      if(f === 'in') sheetSessions[i].checkIn = inp.value || '';
+      else sheetSessions[i].checkOut = inp.value || null;
+    });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll('[data-del]'), function(b){
+    b.addEventListener('click', function(){
+      sheetSessions.splice(parseInt(b.getAttribute('data-del'), 10), 1);
+      renderSheetSessions();
+    });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll('.session-mode button'), function(b){
+    b.addEventListener('click', function(){
+      var row = b.parentNode;
+      var i = parseInt(row.getAttribute('data-i'), 10);
+      sheetSessions[i].mode = b.getAttribute('data-mode');
+      Array.prototype.forEach.call(row.querySelectorAll('button'), function(x){
+        x.classList.toggle('on', x === b);
+      });
+    });
+  });
+}
+function setSheetLeaveKind(kind){
+  Array.prototype.forEach.call(document.querySelectorAll('#segLeave button'), function(b){
+    b.classList.toggle('on', b.getAttribute('data-v') === kind);
+  });
+  document.getElementById('blockLeaveType').style.display = (kind === 'full' || kind === 'hours') ? 'block' : 'none';
+  document.getElementById('blockLeaveHours').style.display = kind === 'hours' ? 'block' : 'none';
+}
+function setSheetHoliday(on){
+  document.getElementById('chkHoliday').checked = !!on;
+  document.getElementById('blockWorkLeave').style.display = on ? 'none' : 'block';
+  document.getElementById('blockHolidayNote').style.display = on ? 'block' : 'none';
+}
+function openSheet(key, forceHoliday, focus){
   sheetKey = key;
+  sheetFocusLeave = focus === 'leave';
   var date = keyToDate(key);
   var entry = getEntry(key);
   document.getElementById('sheetTitle').textContent = jalaliLabel(date)+' — '+weekdayFmt.format(date);
-  sheetType = forceType || (entry ? entry.type : (isWeeklyWorkDay(date) ? 'normal' : 'off'));
-  setSegType(sheetType);
-  document.getElementById('fIn').value = (entry && entry.checkIn) || '';
-  document.getElementById('fOut').value = (entry && entry.checkOut) || '';
-  document.getElementById('fLeaveType').value = (entry && entry.leaveType) || 'استحقاقی';
-  document.getElementById('fLeaveHours').value = entry && entry.leaveMinutes ? (entry.leaveMinutes/60) : 4;
-  document.getElementById('fHolidayTitle').value = (entry && entry.holidayTitle) || '';
+  var asHoliday = forceHoliday === 'holiday' || !!(entry && entry.holiday);
+  sheetSessions = entry ? entrySessions(entry).map(function(s){
+    return { checkIn: s.checkIn || '', checkOut: s.checkOut || '', mode: s.mode === 'remote' ? 'remote' : 'normal' };
+  }) : [];
+  if(!asHoliday && !sheetSessions.length && !entry && isWeeklyWorkDay(date) && !sheetFocusLeave){
+    sheetSessions = [{ checkIn: '', checkOut: '', mode: 'normal' }];
+  }
+  renderSheetSessions();
+  var leave = entry ? entryLeave(entry) : null;
+  var leaveKind = leave ? leave.kind : 'none';
+  if(sheetFocusLeave && leaveKind === 'none') leaveKind = 'full';
+  setSheetLeaveKind(leaveKind);
+  document.getElementById('fLeaveType').value = (leave && leave.leaveType) || 'استحقاقی';
+  document.getElementById('fLeaveHours').value = (leave && leave.kind === 'hours' && leave.leaveMinutes)
+    ? (leave.leaveMinutes / 60) : 4;
+  document.getElementById('fHolidayTitle').value = (entry && entry.holiday && entry.holiday.title) || '';
   document.getElementById('fNote').value = (entry && entry.note) || '';
-  document.getElementById('btnDeleteEntry').style.display = entry ? 'block' : 'none';
+  setSheetHoliday(asHoliday);
+  document.getElementById('btnDeleteEntry').style.display = entry && entryHasContent(entry) ? 'block' : 'none';
   var mzRow = document.getElementById('mzSendRow');
   var mzNote = document.getElementById('mzSendNote');
-  if(mizitoConfigured() && entry){
+  if(mizitoConfigured() && entry && entryHasContent(entry)){
     mzRow.style.display = 'flex';
     mzNote.className = 'mz-note';
     mzNote.textContent = entry.mizitoSentAt ? ('قبلاً ارسال شده — '+new Date(entry.mizitoSentAt).toLocaleString('fa-IR')) : '';
@@ -676,18 +1031,16 @@ function openSheet(key, forceType){
   document.getElementById('sheetBackdrop').classList.add('open');
 }
 function closeSheet(){ document.getElementById('sheetBackdrop').classList.remove('open'); sheetKey = null; }
-function setSegType(t){
-  sheetType = t;
-  Array.prototype.forEach.call(document.querySelectorAll('#segType button'), function(b){
-    b.classList.toggle('on', b.getAttribute('data-v')===t);
-  });
-  document.getElementById('blockTimes').style.display = (t==='normal'||t==='remote') ? 'block' : 'none';
-  document.getElementById('blockLeaveType').style.display = (t==='leave_full') ? 'block' : 'none';
-  document.getElementById('blockLeaveHours').style.display = (t==='leave_hours') ? 'block' : 'none';
-  document.getElementById('blockHolidayNote').style.display = (t==='holiday') ? 'block' : 'none';
-}
-Array.prototype.forEach.call(document.querySelectorAll('#segType button'), function(b){
-  b.addEventListener('click', function(){ setSegType(b.getAttribute('data-v')); });
+
+document.getElementById('btnAddSession').addEventListener('click', function(){
+  sheetSessions.push({ checkIn: '', checkOut: '', mode: 'normal' });
+  renderSheetSessions();
+});
+Array.prototype.forEach.call(document.querySelectorAll('#segLeave button'), function(b){
+  b.addEventListener('click', function(){ setSheetLeaveKind(b.getAttribute('data-v')); });
+});
+document.getElementById('chkHoliday').addEventListener('change', function(){
+  setSheetHoliday(this.checked);
 });
 document.getElementById('sheetBackdrop').addEventListener('click', function(e){ if(e.target===this) closeSheet(); });
 document.getElementById('btnCancelEntry').addEventListener('click', closeSheet);
@@ -718,26 +1071,72 @@ document.getElementById('btnDeleteEntry').addEventListener('click', function(){
   removeEntry(sheetKey);
   showToast('حذف شد');
   closeSheet();
+  syncOpenSessionReminder();
   refreshAll();
 });
 document.getElementById('btnSaveEntry').addEventListener('click', function(){
   if(!sheetKey) return;
-  if(sheetType==='off'){ removeEntry(sheetKey); showToast('ذخیره شد'); closeSheet(); refreshAll(); return; }
-  var entry = { type: sheetType, note: document.getElementById('fNote').value.trim() };
-  if(sheetType==='normal' || sheetType==='remote'){
-    entry.checkIn = document.getElementById('fIn').value || null;
-    entry.checkOut = document.getElementById('fOut').value || null;
-  } else if(sheetType==='leave_full'){
-    entry.leaveType = document.getElementById('fLeaveType').value;
-  } else if(sheetType==='leave_hours'){
-    var hrs = parseFloat(document.getElementById('fLeaveHours').value)||0;
-    entry.leaveMinutes = Math.round(hrs*60);
-  } else if(sheetType==='holiday'){
-    entry.holidayTitle = document.getElementById('fHolidayTitle').value.trim();
+  var prev = getEntry(sheetKey);
+  if(document.getElementById('chkHoliday').checked){
+    var hol = {
+      sessions: [], leave: null,
+      holiday: { title: document.getElementById('fHolidayTitle').value.trim() },
+      note: document.getElementById('fNote').value.trim(),
+      nextMode: 'normal'
+    };
+    if(prev && prev.mizitoSentAt) hol.mizitoSentAt = prev.mizitoSentAt;
+    if(prev && prev.mizitoTaskId) hol.mizitoTaskId = prev.mizitoTaskId;
+    setEntry(sheetKey, hol);
+    showToast(sheetKey===todayKey() ? 'ذخیره شد' : 'برای '+jalaliLabel(keyToDate(sheetKey))+' ذخیره شد');
+    closeSheet();
+    syncOpenSessionReminder();
+    refreshAll();
+    return;
   }
+  var sessions = sheetSessions.map(function(s){
+    return {
+      checkIn: s.checkIn || '',
+      checkOut: s.checkOut || null,
+      mode: s.mode === 'remote' ? 'remote' : 'normal'
+    };
+  }).filter(function(s){ return !!s.checkIn; });
+  var verr = validateSessions(sessions);
+  if(verr){ showToast(verr); return; }
+  var leaveKind = 'none';
+  Array.prototype.forEach.call(document.querySelectorAll('#segLeave button'), function(b){
+    if(b.classList.contains('on')) leaveKind = b.getAttribute('data-v');
+  });
+  var leave = null;
+  if(leaveKind === 'full'){
+    leave = { kind: 'full', leaveType: document.getElementById('fLeaveType').value };
+  } else if(leaveKind === 'hours'){
+    var hrs = parseFloat(document.getElementById('fLeaveHours').value) || 0;
+    leave = {
+      kind: 'hours',
+      leaveType: document.getElementById('fLeaveType').value,
+      leaveMinutes: Math.round(hrs * 60)
+    };
+  }
+  if(!sessions.length && !leave && !document.getElementById('fNote').value.trim()){
+    removeEntry(sheetKey);
+    showToast('ثبت روز پاک شد');
+    closeSheet();
+    refreshAll();
+    return;
+  }
+  var entry = {
+    sessions: sessions,
+    leave: leave,
+    holiday: null,
+    note: document.getElementById('fNote').value.trim(),
+    nextMode: (prev && prev.nextMode === 'remote') ? 'remote' : 'normal'
+  };
+  if(prev && prev.mizitoSentAt) entry.mizitoSentAt = prev.mizitoSentAt;
+  if(prev && prev.mizitoTaskId) entry.mizitoTaskId = prev.mizitoTaskId;
   setEntry(sheetKey, entry);
   showToast(sheetKey===todayKey() ? 'ذخیره شد' : 'برای '+jalaliLabel(keyToDate(sheetKey))+' ذخیره شد');
   closeSheet();
+  syncOpenSessionReminder();
   refreshAll();
 });
 
@@ -754,13 +1153,21 @@ document.getElementById('btnConfirmDatePick').addEventListener('click', function
   var v = document.getElementById('fPickDate').value; // "YYYY-MM-DD" gregorian, from native date input
   if(!v){ showToast('یک تاریخ انتخاب کنید'); return; }
   document.getElementById('datePickBackdrop').classList.remove('open');
-  openSheet(v, 'holiday');
+  openSheet(v, 'holiday', null);
 });
 
 /* ---------------- Settings (name / standard hours — full settings in a later phase) ---------------- */
 function renderSettings(){
   document.getElementById('setName').value = DATA.settings.employeeName || '';
   document.getElementById('setStdHours').value = DATA.settings.stdHours;
+  var caps = DATA.settings.leaveCaps || {};
+  document.getElementById('setLeaveEntitled').value = caps['استحقاقی'] != null ? caps['استحقاقی'] : 26;
+  document.getElementById('setLeaveSick').value = caps['استعلاجی'] != null ? caps['استعلاجی'] : 15;
+  document.getElementById('setLeaveUnpaid').value = caps['بدون‌حقوق'] != null ? caps['بدون‌حقوق'] : 0;
+  document.getElementById('setLeaveAdmin').value = caps['اداری'] != null ? caps['اداری'] : 0;
+  var rem = DATA.settings.reminder || DEFAULT_DATA.settings.reminder;
+  document.getElementById('setReminderEnabled').checked = !!rem.enabled;
+  document.getElementById('setReminderMinutes').value = rem.afterMinutes || 90;
   renderWeekdayGrid();
   var m = DATA.settings.mizito;
   var box = document.getElementById('mzParsedBox');
@@ -783,22 +1190,141 @@ document.getElementById('setStdHours').addEventListener('change', function(){
   var v = parseFloat(this.value); if(!v || v<=0) v = 8;
   DATA.settings.stdHours = v; saveData(); refreshAll();
 });
+function bindLeaveCapInput(id, typeKey){
+  document.getElementById(id).addEventListener('change', function(){
+    var v = parseFloat(this.value);
+    if(isNaN(v) || v < 0) v = 0;
+    DATA.settings.leaveCaps[typeKey] = Math.round(v);
+    saveData();
+    renderReport();
+  });
+}
+bindLeaveCapInput('setLeaveEntitled', 'استحقاقی');
+bindLeaveCapInput('setLeaveSick', 'استعلاجی');
+bindLeaveCapInput('setLeaveUnpaid', 'بدون‌حقوق');
+bindLeaveCapInput('setLeaveAdmin', 'اداری');
+document.getElementById('setReminderEnabled').addEventListener('change', function(){
+  DATA.settings.reminder.enabled = !!this.checked;
+  saveData();
+  syncOpenSessionReminder();
+});
+document.getElementById('setReminderMinutes').addEventListener('change', function(){
+  var v = parseInt(this.value, 10);
+  if(!v || v < 15) v = 15;
+  if(v > 720) v = 720;
+  DATA.settings.reminder.afterMinutes = v;
+  this.value = v;
+  saveData();
+  syncOpenSessionReminder();
+});
 
 /* ---------------- REPORT view ---------------- */
 var repView = jalaliPartsOf(new Date());
+var repFilter = 'all';
 function rstat(n,l){ return '<div class="rstat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
+function collectFilteredMonthDays(jy, jm, filter){
+  var info = jalaliMonthInfo(jy, jm);
+  var list = [];
+  for(var d=1; d<=info.days; d++){
+    var date = new Date(info.start.getTime());
+    date.setDate(date.getDate()+(d-1));
+    var key = dateKeyOf(date);
+    var entry = getEntry(key);
+    if(!entryMatchesFilter(entry, date, filter)) continue;
+    if(filter !== 'all' && (!entry || !entryHasContent(entry))) continue;
+    list.push({ d:d, date:date, key:key, entry:entry });
+  }
+  return list;
+}
 function renderReport(){
   var info = jalaliMonthInfo(repView.y, repView.m);
   document.getElementById('repMonthTitle').textContent = info.name+' '+repView.y;
-  var agg = aggregateMonth(repView.y, repView.m);
-  document.getElementById('repGrid').innerHTML =
-    rstat(fmtHours(agg.workedMinutes),'جمع کارکرد') +
-    rstat(fmtHours(agg.overtimeMinutes), (agg.overtimeMinutes>=0?'اضافه‌کاری':'کسری کارکرد')) +
-    rstat(agg.leaveDays+' روز','مرخصی روزانه') +
-    rstat(agg.holidayDays+' روز','تعطیل رسمی') +
-    rstat(agg.missingDays+' روز','بدون ثبت');
+  Array.prototype.forEach.call(document.querySelectorAll('#segRepFilter button'), function(b){
+    b.classList.toggle('on', b.getAttribute('data-v') === repFilter);
+  });
+  var hint = document.getElementById('repFilterHint');
+  if(repFilter === 'all'){
+    hint.textContent = 'همهٔ روزهای ماه در خلاصه و اکسل می‌آید.';
+  } else {
+    hint.textContent = 'خلاصهٔ پایین و اکسل فقط روزهای «'+filterLabel(repFilter)+'» را نشان می‌دهد.';
+  }
+
+  var matched = collectFilteredMonthDays(repView.y, repView.m, repFilter);
+  var workedMinutes = 0, leaveDays = 0, leaveHoursTotal = 0, holidayDays = 0, otDays = 0;
+  matched.forEach(function(item){
+    var entry = item.entry;
+    if(!entry || !entryHasContent(entry)) return;
+    if(entry.holiday){ holidayDays++; return; }
+    workedMinutes += entryWorkedMinutes(entry);
+    var leave = entryLeave(entry);
+    if(leave){
+      if(leave.kind === 'full') leaveDays++;
+      else leaveHoursTotal += (leave.leaveMinutes || 0);
+    }
+    if(entryWorkedMinutes(entry) > DATA.settings.stdHours * 60) otDays++;
+  });
+
+  if(repFilter === 'all'){
+    var agg = aggregateMonth(repView.y, repView.m);
+    document.getElementById('repGrid').innerHTML =
+      rstat(fmtHours(agg.workedMinutes),'جمع کارکرد') +
+      rstat(fmtHours(agg.overtimeMinutes), (agg.overtimeMinutes>=0?'اضافه‌کاری':'کسری کارکرد')) +
+      rstat(agg.leaveDays+' روز','مرخصی روزانه') +
+      rstat(agg.holidayDays+' روز','تعطیل رسمی') +
+      rstat(agg.missingDays+' روز','بدون ثبت');
+  } else {
+    document.getElementById('repGrid').innerHTML =
+      rstat(matched.length+' روز','تعداد مطابق فیلتر') +
+      rstat(fmtHours(workedMinutes),'جمع کارکرد فیلتر') +
+      rstat(leaveDays+' روز','مرخصی روزانه') +
+      rstat(fmtHours(leaveHoursTotal),'مرخصی ساعتی') +
+      rstat(otDays+' روز','روز اضافه‌کار');
+  }
+
+  document.getElementById('repLeaveYearLabel').textContent = repView.y;
+  var usedYear = aggregateYearLeave(repView.y);
+  var caps = DATA.settings.leaveCaps || {};
+  document.getElementById('repLeaveCaps').innerHTML = LEAVE_TYPES.map(function(t){
+    var used = usedYear[t] || 0;
+    var cap = caps[t];
+    var label;
+    if(!cap){
+      label = 'مصرف‌شده (بدون سقف)';
+      return rstat(fmtLeaveDays(used)+' روز', t+' — '+label);
+    }
+    var rem = Math.max(0, cap - used);
+    label = 'مانده از '+cap;
+    return rstat(fmtLeaveDays(rem)+' روز', t+' — '+label+' (مصرف '+fmtLeaveDays(used)+')');
+  }).join('');
+
+  var listEl = document.getElementById('repFilterList');
+  if(repFilter === 'all'){
+    listEl.innerHTML = '<div class="empty" style="padding:12px 0;">برای دیدن لیست، یکی از فیلترها را انتخاب کنید</div>';
+  } else if(!matched.length){
+    listEl.innerHTML = '<div class="empty" style="padding:12px 0;">روزی با این فیلتر نیست</div>';
+  } else {
+    listEl.innerHTML = matched.map(function(item){
+      var badge = typeBadgeLabel(item.entry, item.date);
+      var detail = entryDetailText(item.entry) || '—';
+      return '<div class="day-row" data-key="'+item.key+'">'+
+        '<div class="day-num">'+item.d+'</div>'+
+        '<div class="day-info"><div class="day-wd">'+weekdayShortFmt.format(item.date)+'</div>'+
+        '<div class="day-detail">'+detail+'</div></div>'+
+        '<span class="badge '+badge.cls+'">'+badge.text+'</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(listEl.querySelectorAll('.day-row'), function(row){
+      row.addEventListener('click', function(){ openSheet(row.getAttribute('data-key')); });
+    });
+  }
+
   document.getElementById('btnMizitoBulk').style.display = mizitoConfigured() ? 'flex' : 'none';
 }
+Array.prototype.forEach.call(document.querySelectorAll('#segRepFilter button'), function(b){
+  b.addEventListener('click', function(){
+    repFilter = b.getAttribute('data-v') || 'all';
+    renderReport();
+  });
+});
 document.getElementById('repPrev').addEventListener('click', function(){
   repView.m--; if(repView.m<1){ repView.m=12; repView.y--; } renderReport();
 });
@@ -840,6 +1366,56 @@ document.getElementById('btnMizitoBulk').addEventListener('click', function(){
 function getCapacitorPlugins(){
   return (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins : null;
 }
+
+/* ---------------- Open-session checkout reminder ---------------- */
+function cancelOpenSessionReminder(){
+  var plugins = getCapacitorPlugins();
+  if(plugins && plugins.LocalNotifications){
+    return plugins.LocalNotifications.cancel({ notifications: [{ id: REMINDER_NOTIF_ID }] }).catch(function(){});
+  }
+  return Promise.resolve();
+}
+function ensureReminderPermission(){
+  var plugins = getCapacitorPlugins();
+  if(!plugins || !plugins.LocalNotifications) return Promise.resolve(false);
+  var LN = plugins.LocalNotifications;
+  return LN.checkPermissions().then(function(p){
+    if(p && p.display === 'granted') return true;
+    return LN.requestPermissions().then(function(p2){
+      return !!(p2 && p2.display === 'granted');
+    });
+  }).catch(function(){ return false; });
+}
+function syncOpenSessionReminder(){
+  var entry = getEntry(todayKey());
+  var open = openSession(entry);
+  var rem = DATA.settings.reminder || DEFAULT_DATA.settings.reminder;
+  if(!rem.enabled || !open){
+    return cancelOpenSessionReminder();
+  }
+  // If already past the threshold, fire soon (1 min); else from check-in + afterMinutes
+  var now = new Date();
+  var parts = String(open.checkIn || '0:0').split(':').map(Number);
+  var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0]||0, parts[1]||0, 0, 0);
+  var due = new Date(start.getTime() + (rem.afterMinutes || 90) * 60 * 1000);
+  var plugins = getCapacitorPlugins();
+  if(!plugins || !plugins.LocalNotifications) return Promise.resolve();
+  return ensureReminderPermission().then(function(ok){
+    if(!ok) return;
+    var at = due.getTime() <= Date.now() ? new Date(Date.now() + 60 * 1000) : due;
+    return cancelOpenSessionReminder().then(function(){
+      return plugins.LocalNotifications.schedule({
+        notifications: [{
+          id: REMINDER_NOTIF_ID,
+          title: 'خروج ثبت نشده',
+          body: 'از ساعت '+open.checkIn+' جلسه باز است — خروج را ثبت کنید',
+          schedule: { at: at, allowWhileIdle: true },
+          extra: { kind: 'open_session' }
+        }]
+      });
+    });
+  }).catch(function(){});
+}
 function nativeSaveAndShare(fname, data, isText){
   var plugins = getCapacitorPlugins();
   if(!plugins || !plugins.Filesystem){
@@ -875,11 +1451,14 @@ function browserDownloadFallback(fname, blob){
 }
 
 /* ---------------- Excel export ---------------- */
-function buildReportWorkbook(jy, jm){
+function buildReportWorkbook(jy, jm, filter){
+  filter = filter || 'all';
   var info = jalaliMonthInfo(jy, jm);
   var agg = aggregateMonth(jy, jm);
   var name = DATA.settings.employeeName || '—';
   var genDate = jalaliLabel(new Date());
+  var usedYear = aggregateYearLeave(jy);
+  var caps = DATA.settings.leaveCaps || {};
 
   var HEAD_FILL = "1F2A37", HEAD_FONT = "FFFFFF";
   var TITLE_FILL = "AE3A2E";
@@ -887,9 +1466,16 @@ function buildReportWorkbook(jy, jm){
 
   rows.push(["گزارش تردد پرسنل"]);
   rows.push(["نام: "+name, "", "ماه: "+info.name+" "+jy, "", "تاریخ تهیه: "+genDate]);
-  rows.push([]);
+  if(filter !== 'all'){
+    rows.push(["فیلتر: "+filterLabel(filter)]);
+  } else {
+    rows.push([]);
+  }
   var headers = ["ردیف","تاریخ","روز هفته","وضعیت","ساعت ورود","ساعت خروج","مدت کارکرد (ساعت)","نسبت به سقف روزانه","توضیحات"];
   rows.push(headers);
+
+  var rowNo = 0;
+  var fWorked = 0, fLeaveDays = 0, fLeaveHours = 0, fHoliday = 0, fOtDays = 0;
 
   for(var d=1; d<=info.days; d++){
     var date = new Date(info.start.getTime());
@@ -897,57 +1483,92 @@ function buildReportWorkbook(jy, jm){
     var key = dateKeyOf(date);
     var entry = getEntry(key);
     var wd = isWeeklyWorkDay(date);
+
+    if(filter !== 'all'){
+      if(!entryMatchesFilter(entry, date, filter)) continue;
+      if(!entry || !entryHasContent(entry)) continue;
+    }
+
     var statusText = "تعطیل هفتگی";
     var cin = "", cout = "", worked = "", diffText = "";
     var note = entry && entry.note ? entry.note : "";
 
-    if(entry){
-      if(entry.type==='normal'){ statusText = "حضوری"; }
-      else if(entry.type==='remote'){ statusText = "دورکاری"; }
-      else if(entry.type==='leave_full'){ statusText = "مرخصی ("+(entry.leaveType||"استحقاقی")+")"; }
-      else if(entry.type==='leave_hours'){ statusText = "مرخصی ساعتی"; }
-      else if(entry.type==='holiday'){ statusText = "تعطیل رسمی"+(entry.holidayTitle? (" — "+entry.holidayTitle):""); }
-
-      if(entry.type==='normal'||entry.type==='remote'){
-        cin = entry.checkIn||""; cout = entry.checkOut||"";
-        var mins = minutesBetween(entry.checkIn, entry.checkOut);
-        if(mins!=null){
+    if(entry && entryHasContent(entry)){
+      statusText = entryStatusText(entry) || "ثبت‌شده";
+      if(entry.holiday){
+        diffText = "0.00";
+        fHoliday++;
+      } else {
+        var times = entryTimesJoined(entry);
+        cin = times.cin;
+        cout = times.cout;
+        var mins = entryWorkedMinutes(entry);
+        fWorked += mins;
+        var leave = entryLeave(entry);
+        if(mins > DATA.settings.stdHours*60) fOtDays++;
+        if(mins > 0 || entrySessions(entry).length){
           worked = (mins/60).toFixed(2);
           var diff = mins - DATA.settings.stdHours*60;
           diffText = (diff>=0?"+":"")+(diff/60).toFixed(2);
+        } else if(leave && leave.kind === 'hours'){
+          worked = (mins/60).toFixed(2);
+          diffText = (-(leave.leaveMinutes||0)/60).toFixed(2);
+        } else if(leave && leave.kind === 'full'){
+          worked = "";
+          diffText = "0.00";
         }
-      } else if(entry.type==='leave_hours'){
-        worked = (entryWorkedMinutes(entry)/60).toFixed(2);
-        diffText = (-(entry.leaveMinutes||0)/60).toFixed(2);
-        note = (((entry.leaveMinutes||0)/60)+" ساعت مرخصی")+(note? " — "+note:"");
-      } else if(entry.type==='leave_full'){
-        worked = DATA.settings.stdHours.toFixed(2);
-        diffText = "0.00";
-      } else if(entry.type==='holiday'){
-        diffText = "0.00";
+        if(leave){
+          if(leave.kind === 'full') fLeaveDays++;
+          else fLeaveHours += (leave.leaveMinutes||0);
+          var leaveNote = leave.kind === 'full'
+            ? ('مرخصی روزانه ('+(leave.leaveType||'استحقاقی')+')')
+            : (((leave.leaveMinutes||0)/60)+' ساعت مرخصی'+(leave.leaveType?(' — '+leave.leaveType):''));
+          note = note ? (leaveNote+' — '+note) : leaveNote;
+        }
       }
     } else if(wd){
       statusText = "بدون ثبت";
     }
 
-    rows.push([d, jalaliLabel(date), weekdayFmt.format(date), statusText, cin, cout, worked, diffText, note]);
+    rowNo++;
+    rows.push([rowNo, jalaliLabel(date), weekdayFmt.format(date), statusText, cin, cout, worked, diffText, note]);
   }
 
   var sumRowStart = rows.length + 1;
   rows.push([]);
-  rows.push(["جمع‌بندی ماه"]);
-  rows.push(["جمع ساعت کارکرد", (agg.workedMinutes/60).toFixed(2)]);
-  rows.push(["اضافه‌کاری / کسری (ساعت)", (agg.overtimeMinutes/60).toFixed(2)]);
-  rows.push(["تعداد روز مرخصی روزانه", agg.leaveDays]);
-  rows.push(["جمع ساعات مرخصی ساعتی", (agg.leaveHoursTotal/60).toFixed(2)]);
-  rows.push(["تعداد روزهای تعطیل رسمی", agg.holidayDays]);
-  rows.push(["تعداد روزهای بدون ثبت (کاری)", agg.missingDays]);
-  Object.keys(agg.leaveByType).forEach(function(t){
-    rows.push(["  از این میان، مرخصی "+t, agg.leaveByType[t]]);
+  rows.push(["جمع‌بندی"+(filter==='all'?' ماه':' فیلتر')]);
+  if(filter === 'all'){
+    rows.push(["جمع ساعت کارکرد", (agg.workedMinutes/60).toFixed(2)]);
+    rows.push(["اضافه‌کاری / کسری (ساعت)", (agg.overtimeMinutes/60).toFixed(2)]);
+    rows.push(["تعداد روز مرخصی روزانه", agg.leaveDays]);
+    rows.push(["جمع ساعات مرخصی ساعتی", (agg.leaveHoursTotal/60).toFixed(2)]);
+    rows.push(["تعداد روزهای تعطیل رسمی", agg.holidayDays]);
+    rows.push(["تعداد روزهای بدون ثبت (کاری)", agg.missingDays]);
+    Object.keys(agg.leaveByType).forEach(function(t){
+      rows.push(["  از این میان، مرخصی "+t, agg.leaveByType[t]]);
+    });
+  } else {
+    rows.push(["تعداد روزهای فیلتر", rowNo]);
+    rows.push(["جمع ساعت کارکرد (فیلتر)", (fWorked/60).toFixed(2)]);
+    rows.push(["تعداد روز مرخصی روزانه", fLeaveDays]);
+    rows.push(["جمع ساعات مرخصی ساعتی", (fLeaveHours/60).toFixed(2)]);
+    rows.push(["تعداد روز اضافه‌کار", fOtDays]);
+    rows.push(["تعداد تعطیل رسمی در فیلتر", fHoliday]);
+  }
+  rows.push([]);
+  rows.push(["مانده مرخصی سال "+jy]);
+  LEAVE_TYPES.forEach(function(t){
+    var used = usedYear[t] || 0;
+    var cap = caps[t];
+    if(!cap){
+      rows.push(["مرخصی "+t, "مصرف "+fmtLeaveDays(used)+" روز (بدون سقف)"]);
+    } else {
+      rows.push(["مرخصی "+t, "مانده "+fmtLeaveDays(Math.max(0, cap-used))+" از "+cap+" (مصرف "+fmtLeaveDays(used)+")"]);
+    }
   });
 
   var ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{wch:5},{wch:12},{wch:10},{wch:24},{wch:10},{wch:10},{wch:14},{wch:16},{wch:26}];
+  ws['!cols'] = [{wch:5},{wch:12},{wch:10},{wch:28},{wch:28},{wch:28},{wch:14},{wch:16},{wch:30}];
   var lastCol = headers.length-1;
 
   ws['!merges'] = [
@@ -983,8 +1604,8 @@ function buildReportWorkbook(jy, jm){
     var st = String(rowArr[3]||"");
     var isOff = st==="تعطیل هفتگی";
     var isMissing = st==="بدون ثبت";
-    var isLeave = st.indexOf("مرخصی")===0;
-    var isHol = st.indexOf("تعطیل رسمی")===0;
+    var isLeave = st.indexOf("مرخصی") !== -1;
+    var isHol = st.indexOf("تعطیل رسمی") === 0;
     var bg = isOff ? "F1EFE8" : isMissing ? "FBE7E4" : isHol ? "E4E7EC" : isLeave ? "F2E7D3" : (r%2===0? "FFFFFF":"F8F6F0");
     for(c=0;c<=lastCol;c++){
       styleCell(r,c,{ font:{sz:10.5}, fill:{fgColor:{rgb:bg}}, alignment:{horizontal: c<=1?"center":(c===8?"right":"center")}, border:borderAll });
@@ -1002,7 +1623,9 @@ function buildReportWorkbook(jy, jm){
   wb.Workbook = { Views: [{ RTL: true }] };
   XLSX.utils.book_append_sheet(wb, ws, "تردد");
 
-  var fname = "تردد-"+(name!=='—'?name.replace(/\s+/g,'_')+'-':'')+jy+'-'+pad2(jm)+".xlsx";
+  var fname = "تردد-"+(name!=='—'?name.replace(/\s+/g,'_')+'-':'')+jy+'-'+pad2(jm);
+  if(filter !== 'all') fname += '-'+filter;
+  fname += ".xlsx";
   return { wb: wb, fname: fname };
 }
 
@@ -1010,7 +1633,7 @@ document.getElementById('btnExport').addEventListener('click', function(){
   if(typeof XLSX === 'undefined'){ showToast('کتابخانه اکسل بارگذاری نشد'); return; }
   var btn = document.getElementById('btnExport');
   btn.disabled = true;
-  var built = buildReportWorkbook(repView.y, repView.m);
+  var built = buildReportWorkbook(repView.y, repView.m, repFilter);
   var b64 = XLSX.write(built.wb, {type:'base64', bookType:'xlsx'});
   nativeSaveAndShare(built.fname, b64, false).then(function(handledNatively){
     if(!handledNatively){
@@ -1073,6 +1696,7 @@ document.getElementById('restoreFile').addEventListener('change', function(e){
       d.settings.mizito = d.settings.mizito || {};
       ["project","board","assignee"].forEach(function(k){ if(typeof d.settings.mizito[k] !== "string") d.settings.mizito[k] = keep[k] || ""; });
       d.settings.mizito.token = keep.token || ""; d.settings.mizito.username = keep.username || ""; d.settings.mizito.passHash = keep.passHash || "";
+      Object.keys(d.entries || {}).forEach(function(k){ d.entries[k] = normalizeEntry(d.entries[k]); });
       DATA = d;
       saveData();
       showToast('بازیابی انجام شد');
@@ -1159,17 +1783,35 @@ document.getElementById('btnClearLogin').addEventListener('click', function(){
   });
 });
 
-/* ---------------- Init ---------------- */function refreshAll(){
+/* ---------------- Init ---------------- */
+function refreshAll(){
   renderTopDate();
   renderToday();
   renderCalendar();
   renderReport();
   renderSettings();
 }
+function wireAppResumeReminder(){
+  var plugins = getCapacitorPlugins();
+  if(plugins && plugins.App && plugins.App.addListener){
+    plugins.App.addListener('appStateChange', function(state){
+      if(state && state.isActive) syncOpenSessionReminder();
+    });
+  }
+}
 setInterval(renderTopDate, 60000);
 refreshAll();
+syncOpenSessionReminder();
+wireAppResumeReminder();
 
 // expose a couple of internals for debugging via the app's own devtools, harmless in production
-window.__tardod = { DATA: DATA, aggregateMonth: aggregateMonth, jalaliPartsOf: jalaliPartsOf, jalaliMonthInfo: jalaliMonthInfo, calView: calView, repView: repView, buildReportWorkbook: buildReportWorkbook };
+window.__tardod = {
+  DATA: DATA, aggregateMonth: aggregateMonth, jalaliPartsOf: jalaliPartsOf, jalaliMonthInfo: jalaliMonthInfo,
+  calView: calView, repView: repView, buildReportWorkbook: buildReportWorkbook,
+  normalizeEntry: normalizeEntry, buildMizitoNotes: buildMizitoNotes, entryWorkedMinutes: entryWorkedMinutes,
+  entryStatusText: entryStatusText, validateSessions: validateSessions,
+  aggregateYearLeave: aggregateYearLeave, entryMatchesFilter: entryMatchesFilter,
+  syncOpenSessionReminder: syncOpenSessionReminder
+};
 
 })();

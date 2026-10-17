@@ -219,6 +219,15 @@ nav.tabbar{ flex-shrink:0; display:flex; background:var(--card); border-top:1px 
 .time-row .field{flex:1; margin-bottom:0;}
 .field{margin-bottom:16px;}
 .field label{display:block; font-size:13px; font-weight:700; margin-bottom:7px; color:var(--ink-soft);}
+.holiday-check{ display:flex; align-items:center; gap:10px; margin-bottom:14px; font-size:13.5px; font-weight:700; color:var(--ink-soft); cursor:pointer; }
+.holiday-check input{ width:18px; height:18px; accent-color:var(--ink); }
+.sheet-section-label{ font-size:12.5px; font-weight:800; color:var(--muted); margin:4px 0 10px; }
+.session-row{ border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px; background:var(--paper); }
+.session-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:13px; font-weight:800; }
+.session-del{ background:none; border:none; color:var(--stamp); font-family:inherit; font-size:12.5px; font-weight:700; cursor:pointer; padding:0; }
+.session-mode{ margin-bottom:0; }
+.session-mode button{ min-width:0; }
+.session-empty{ font-size:13px; color:var(--muted); text-align:center; padding:12px 8px 16px; }
 input[type=time], input[type=date], input[type=text], input[type=number], select, textarea{
   width:100%; padding:12px 14px; border-radius:11px; border:1px solid var(--line);
   background:var(--paper); color:var(--ink); font-family:inherit; font-size:14.5px;

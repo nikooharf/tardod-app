@@ -69,13 +69,34 @@
         </div>
       </div>
 
+      <div class="section-title">فیلتر گزارش</div>
+      <div class="card">
+        <div class="seg" id="segRepFilter">
+          <button type="button" data-v="all" class="on">همه</button>
+          <button type="button" data-v="remote">دورکاری</button>
+          <button type="button" data-v="leave">مرخصی</button>
+          <button type="button" data-v="overtime">اضافه‌کار</button>
+        </div>
+        <div class="hint" id="repFilterHint" style="margin:0;">همهٔ روزهای ماه در خلاصه و اکسل می‌آید.</div>
+      </div>
+
       <div class="section-title">خلاصه</div>
       <div class="card">
         <div class="report-grid" id="repGrid"></div>
       </div>
 
+      <div class="section-title">مانده مرخصی سال <span id="repLeaveYearLabel"></span></div>
+      <div class="card">
+        <div class="report-grid" id="repLeaveCaps"></div>
+      </div>
+
+      <div class="section-title">روزهای مطابق فیلتر</div>
+      <div class="card" style="padding:6px 14px;">
+        <div id="repFilterList"></div>
+      </div>
+
       <button class="export-btn" id="btnExport">📊 دریافت فایل اکسل این ماه</button>
-      <div class="hint" id="exportHint">فایل اکسل شامل جدول کامل روزهای ماه، ساعت ورود و خروج، مدت کارکرد، مرخصی‌ها، تعطیلات رسمی و جمع‌بندی نهایی است — آماده ارسال برای واحد منابع انسانی از طریق تلگرام، ایمیل یا هر اپ دیگری روی گوشی.</div>
+      <div class="hint" id="exportHint">فایل اکسل شامل جدول روزها (با فیلتر فعلی)، ساعت ورود و خروج، مدت کارکرد، مرخصی‌ها و جمع‌بندی است.</div>
 
       <button class="export-btn secondary" id="btnMizitoBulk" style="display:none;">📤 ارسال این ماه به میزیتو</button>
       <div class="mz-note" id="mzBulkNote"></div>
@@ -92,6 +113,38 @@
         <div class="field" style="margin-bottom:0;">
           <label>سقف ساعت کاری استاندارد در روز</label>
           <input type="number" id="setStdHours" min="1" max="16" step="0.5">
+        </div>
+      </div>
+
+      <div class="section-title">سقف مرخصی سالانه (روز)</div>
+      <div class="card">
+        <div class="field">
+          <label>استحقاقی</label>
+          <input type="number" id="setLeaveEntitled" min="0" max="365" step="1">
+        </div>
+        <div class="field">
+          <label>استعلاجی</label>
+          <input type="number" id="setLeaveSick" min="0" max="365" step="1">
+        </div>
+        <div class="field">
+          <label>بدون‌حقوق (۰ = بدون سقف)</label>
+          <input type="number" id="setLeaveUnpaid" min="0" max="365" step="1">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>اداری (۰ = بدون سقف)</label>
+          <input type="number" id="setLeaveAdmin" min="0" max="365" step="1">
+        </div>
+      </div>
+
+      <div class="section-title">یادآور خروج باز</div>
+      <div class="card">
+        <label class="holiday-check">
+          <input type="checkbox" id="setReminderEnabled">
+          <span>اگر جلسه باز ماند، نوتیفیکیشن بفرست</span>
+        </label>
+        <div class="field" style="margin-bottom:0;">
+          <label>بعد از چند دقیقه از ورود</label>
+          <input type="number" id="setReminderMinutes" min="15" max="720" step="15">
         </div>
       </div>
 
@@ -213,45 +266,47 @@
       <div class="sheet-handle"></div>
       <h3 id="sheetTitle">ویرایش روز</h3>
 
-      <div class="seg" id="segType">
-        <button data-v="normal">حضوری</button>
-        <button data-v="remote">دورکاری</button>
-        <button data-v="leave_full">مرخصی روزانه</button>
-        <button data-v="leave_hours">مرخصی ساعتی</button>
-        <button data-v="holiday">تعطیل رسمی</button>
-        <button data-v="off">پاک‌کردن ثبت</button>
-      </div>
-
-      <div id="blockTimes">
-        <div class="time-row">
-          <div class="field"><label>ساعت ورود</label><input type="time" id="fIn"></div>
-          <div class="field"><label>ساعت خروج</label><input type="time" id="fOut"></div>
-        </div>
-      </div>
-
-      <div id="blockLeaveType" style="display:none;">
-        <div class="field">
-          <label>نوع مرخصی</label>
-          <select id="fLeaveType">
-            <option value="استحقاقی">استحقاقی</option>
-            <option value="استعلاجی">استعلاجی</option>
-            <option value="بدون‌حقوق">بدون‌حقوق</option>
-            <option value="اداری">اداری</option>
-          </select>
-        </div>
-      </div>
-
-      <div id="blockLeaveHours" style="display:none;">
-        <div class="field">
-          <label>تعداد ساعت مرخصی</label>
-          <input type="number" id="fLeaveHours" min="0.5" max="12" step="0.5">
-        </div>
-      </div>
+      <label class="holiday-check">
+        <input type="checkbox" id="chkHoliday">
+        <span>تعطیل رسمی (بدون کارکرد)</span>
+      </label>
 
       <div id="blockHolidayNote" style="display:none;">
         <div class="field" style="margin-bottom:0;">
           <label>عنوان تعطیلی (اختیاری)</label>
           <input type="text" id="fHolidayTitle" placeholder="مثلاً: تعطیل رسمی به مناسبت...">
+        </div>
+      </div>
+
+      <div id="blockWorkLeave">
+        <div class="sheet-section-label">جلسات ورود / خروج</div>
+        <div id="sheetSessions"></div>
+        <button type="button" class="btn ghost" id="btnAddSession" style="width:100%; margin-bottom:16px;">+ افزودن جلسه</button>
+
+        <div class="sheet-section-label">مرخصی (اختیاری، جدا از جلسات)</div>
+        <div class="seg" id="segLeave">
+          <button type="button" data-v="none" class="on">بدون مرخصی</button>
+          <button type="button" data-v="full">مرخصی روزانه</button>
+          <button type="button" data-v="hours">مرخصی ساعتی</button>
+        </div>
+
+        <div id="blockLeaveType" style="display:none;">
+          <div class="field">
+            <label>نوع مرخصی</label>
+            <select id="fLeaveType">
+              <option value="استحقاقی">استحقاقی</option>
+              <option value="استعلاجی">استعلاجی</option>
+              <option value="بدون‌حقوق">بدون‌حقوق</option>
+              <option value="اداری">اداری</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="blockLeaveHours" style="display:none;">
+          <div class="field" style="margin-bottom:0;">
+            <label>تعداد ساعت مرخصی</label>
+            <input type="number" id="fLeaveHours" min="0.5" max="12" step="0.5">
+          </div>
         </div>
       </div>
 
