@@ -1669,17 +1669,89 @@ function renderWeekdayGrid(){
     });
   });
 }
-document.getElementById('btnBackup').addEventListener('click', function(){
+function countEntries(entries){
+  var n = 0;
+  Object.keys(entries || {}).forEach(function(k){
+    if(entryHasContent(normalizeEntry(entries[k]))) n++;
+  });
+  return n;
+}
+function buildBackupPayload(){
   var copy = JSON.parse(JSON.stringify(DATA));
-  if(copy.settings && copy.settings.mizito){ copy.settings.mizito.token = ""; copy.settings.mizito.username = ""; copy.settings.mizito.passHash = ""; }
-  var json = JSON.stringify(copy, null, 2);
-  var fname = 'tarad-backup-'+todayKey()+'.json';
-  nativeSaveAndShare(fname, json, true).then(function(handledNatively){
+  if(copy.settings && copy.settings.mizito){
+    copy.settings.mizito.token = "";
+    copy.settings.mizito.username = "";
+    copy.settings.mizito.passHash = "";
+  }
+  return {
+    app: 'tardod',
+    schema: 2,
+    exportedAt: new Date().toISOString(),
+    entryCount: countEntries(copy.entries),
+    data: copy
+  };
+}
+function exportBackup(opts){
+  opts = opts || {};
+  var payload = buildBackupPayload();
+  var json = JSON.stringify(payload, null, 2);
+  var fname = 'tarad-backup-'+todayKey()+'-'+payload.entryCount+'days.json';
+  var noteEl = document.getElementById(opts.noteId || 'backupSafeNote');
+  if(noteEl){
+    noteEl.className = 'mz-note';
+    noteEl.textContent = 'در حال ساخت پشتیبان ('+payload.entryCount+' روز)...';
+  }
+  return nativeSaveAndShare(fname, json, true).then(function(handledNatively){
     if(!handledNatively){
       var blob = new Blob([json], {type:'application/json'});
       browserDownloadFallback(fname, blob);
     }
+    var msg = 'پشتیبان آماده شد ('+payload.entryCount+' روز). فایل را در تلگرام Saved یا Files نگه دارید.';
+    showToast(msg);
+    if(noteEl){
+      noteEl.className = 'mz-note ok';
+      noteEl.textContent = msg + (opts.safeHint
+        ? ' حالا می‌توانید APK جدید را نصب کنید؛ اگر فیل شد اپ را پاک کنید و بعد بازیابی کنید.'
+        : '');
+    }
+    return true;
   });
+}
+function normalizeRestoredData(d){
+  if(!d || typeof d !== 'object') throw new Error('bad file');
+  // support both {data:{settings,entries}} (new) and {settings,entries} (old)
+  if(d.data && d.data.settings && d.data.entries) d = d.data;
+  if(!d.entries || !d.settings) throw new Error('bad file');
+  if(typeof d.settings.stdHours !== 'number') d.settings.stdHours = 8;
+  if(!Array.isArray(d.settings.workDays)) d.settings.workDays = [6,0,1,2,3];
+  if(!d.settings.leaveCaps || typeof d.settings.leaveCaps !== 'object'){
+    d.settings.leaveCaps = JSON.parse(JSON.stringify(DEFAULT_DATA.settings.leaveCaps));
+  }
+  LEAVE_TYPES.forEach(function(t){
+    var v = d.settings.leaveCaps[t];
+    d.settings.leaveCaps[t] = (typeof v === 'number' && v >= 0) ? v : (DEFAULT_DATA.settings.leaveCaps[t] || 0);
+  });
+  if(!d.settings.reminder || typeof d.settings.reminder !== 'object'){
+    d.settings.reminder = JSON.parse(JSON.stringify(DEFAULT_DATA.settings.reminder));
+  }
+  if(typeof d.settings.reminder.enabled !== 'boolean') d.settings.reminder.enabled = true;
+  if(typeof d.settings.reminder.afterMinutes !== 'number' || d.settings.reminder.afterMinutes < 15){
+    d.settings.reminder.afterMinutes = 90;
+  }
+  if(!d.settings.mizito) d.settings.mizito = { token:"", project:"", board:"", assignee:"", username:"", passHash:"" };
+  ["token","project","board","assignee","username","passHash"].forEach(function(k){
+    if(typeof d.settings.mizito[k] !== 'string') d.settings.mizito[k] = '';
+  });
+  Object.keys(d.entries).forEach(function(k){ d.entries[k] = normalizeEntry(d.entries[k]); });
+  return d;
+}
+document.getElementById('btnBackup').addEventListener('click', function(){
+  exportBackup({ noteId: 'backupSafeNote' });
+});
+document.getElementById('btnBackupSafe').addEventListener('click', function(){
+  var n = countEntries(DATA.entries);
+  if(!confirm('پشتیبان از '+n+' روز ساخته و منوی اشتراک باز می‌شود.\n\nفایل را حتماً جایی بیرون از اپ ذخیره کنید (تلگرام Saved / فایل‌ها).\nبعد می‌توانید APK را آپدیت کنید یا اپ را پاک کنید.')) return;
+  exportBackup({ noteId: 'backupSafeNote', safeHint: true });
 });
 document.getElementById('btnRestore').addEventListener('click', function(){
   document.getElementById('restoreFile').click();
@@ -1687,21 +1759,36 @@ document.getElementById('btnRestore').addEventListener('click', function(){
 document.getElementById('restoreFile').addEventListener('change', function(e){
   var file = e.target.files[0];
   if(!file) return;
+  var note = document.getElementById('restoreNote');
   var reader = new FileReader();
   reader.onload = function(){
     try{
-      var d = JSON.parse(reader.result);
-      if(!d.entries || !d.settings) throw new Error('bad file');
+      var parsed = JSON.parse(reader.result);
+      var d = normalizeRestoredData(parsed);
+      var n = countEntries(d.entries);
+      if(!confirm('بازیابی '+n+' روز از فایل پشتیبان؟\nدادهٔ فعلی اپ با این فایل جایگزین می‌شود.')){
+        if(note){ note.className = 'mz-note'; note.textContent = 'بازیابی لغو شد'; }
+        return;
+      }
       var keep = DATA.settings.mizito || {};
       d.settings.mizito = d.settings.mizito || {};
-      ["project","board","assignee"].forEach(function(k){ if(typeof d.settings.mizito[k] !== "string") d.settings.mizito[k] = keep[k] || ""; });
-      d.settings.mizito.token = keep.token || ""; d.settings.mizito.username = keep.username || ""; d.settings.mizito.passHash = keep.passHash || "";
-      Object.keys(d.entries || {}).forEach(function(k){ d.entries[k] = normalizeEntry(d.entries[k]); });
+      ["project","board","assignee"].forEach(function(k){
+        if(!d.settings.mizito[k]) d.settings.mizito[k] = keep[k] || "";
+      });
+      // keep live login secrets from current device if backup stripped them
+      if(!d.settings.mizito.token) d.settings.mizito.token = keep.token || "";
+      if(!d.settings.mizito.username) d.settings.mizito.username = keep.username || "";
+      if(!d.settings.mizito.passHash) d.settings.mizito.passHash = keep.passHash || "";
       DATA = d;
       saveData();
-      showToast('بازیابی انجام شد');
+      syncOpenSessionReminder();
+      showToast('بازیابی انجام شد — '+n+' روز');
+      if(note){ note.className = 'mz-note ok'; note.textContent = 'بازیابی موفق: '+n+' روز برگردانده شد ✓'; }
       refreshAll();
-    }catch(err){ showToast('فایل پشتیبان نامعتبر است'); }
+    }catch(err){
+      showToast('فایل پشتیبان نامعتبر است');
+      if(note){ note.className = 'mz-note err'; note.textContent = 'فایل پشتیبان نامعتبر است'; }
+    }
   };
   reader.readAsText(file);
   e.target.value = '';

@@ -153,11 +153,19 @@
         <div class="weekday-grid" id="weekdayGrid"></div>
       </div>
 
-      <div class="section-title">داده‌ها</div>
+      <div class="section-title">داده‌ها و به‌روزرسانی امن</div>
       <div class="card">
+        <div class="about-text" style="margin-bottom:14px;">
+          <b>آپدیت معمولی:</b> APK جدید را روی اپ قبلی نصب کنید — روزها می‌مانند.<br>
+          <b>اگر نصب فیل شد</b> (امضای متفاوت): اول پشتیبان بگیرید → اپ را پاک کنید → APK را نصب کنید → بازیابی.<br>
+          <b>پاک‌کردن اپ</b> همهٔ روزها را پاک می‌کند. فقط فایل JSON بیرون از اپ امن است.
+        </div>
+        <button class="row-btn" id="btnBackupSafe" style="margin-bottom:6px;"><span>۱. پشتیبان قبل از آپدیت / پاک‌کردن</span><span>›</span></button>
+        <div class="mz-note" id="backupSafeNote" style="margin-bottom:10px;"></div>
         <button class="row-btn" id="btnBackup"><span>خروجی پشتیبان (JSON)</span><span>›</span></button>
         <button class="row-btn" id="btnRestore"><span>بازیابی از فایل پشتیبان</span><span>›</span></button>
         <input type="file" id="restoreFile" accept="application/json" style="display:none">
+        <div class="mz-note" id="restoreNote"></div>
         <button class="row-btn danger" id="btnReset" style="margin-bottom:0;"><span>پاک‌کردن کامل اطلاعات</span><span>›</span></button>
       </div>
 
